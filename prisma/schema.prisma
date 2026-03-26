@@ -1,0 +1,67 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id        Int      @id @default(autoincrement())
+  githubId  String   @unique
+  username  String
+  avatarUrl String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  stats        UserStat?
+  repositories Repository[]
+  reports      AnalysisReport[]
+}
+
+model UserStat {
+  id     Int  @id @default(autoincrement())
+  userId Int  @unique
+  user   User @relation(fields: [userId], references: [id])
+
+  actionableScore     Float @default(0)
+  feedbackAcceptScore Float @default(0)
+  avgCycleTimeHours   Float @default(0)
+
+  // Domain Focus Scores
+  infraScore        Float @default(0)
+  dbScore           Float @default(0)
+  architectureScore Float @default(0)
+  logicScore        Float @default(0)
+
+  updatedAt DateTime @updatedAt
+}
+
+model Repository {
+  id           Int       @id @default(autoincrement())
+  githubRepoId String    @unique
+  fullName     String
+  isOptedIn    Boolean   @default(false)
+  lastSyncTime DateTime?
+
+  ownerId Int
+  owner   User @relation(fields: [ownerId], references: [id])
+
+  reports AnalysisReport[]
+}
+
+model AnalysisReport {
+  id       Int      @id @default(autoincrement())
+  syncTime DateTime @default(now())
+
+  userId Int
+  user   User @relation(fields: [userId], references: [id])
+
+  repositoryId Int
+  repository   Repository @relation(fields: [repositoryId], references: [id])
+
+  metrics Json? // Stores detailed analysis data from LLM
+}
