@@ -85,11 +85,9 @@ export class CollectionService implements ICollectionService {
       data: { lastSyncTime: new Date() },
     });
 
-    // 🚀 Trigger Analysis (Async but we can wait or run in background)
-    // For now, we'll run it and return the collected data
-    this.analysisService
-      .runAnalysis(userId, repository.id, collectedData)
-      .catch((err) => console.error('Background analysis failed:', err));
+    // 🚀 Trigger Analysis (Await so Lambda doesn't exit early)
+    // AWS Lambda will freeze execution if we return before this completes.
+    await this.analysisService.runAnalysis(userId, repository.id, collectedData);
 
     return collectedData;
   }
