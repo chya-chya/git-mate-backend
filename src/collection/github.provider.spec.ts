@@ -36,7 +36,7 @@ describe('GithubProvider', () => {
       const token = 'test-token';
 
       const result = await provider.fetchPullRequests(owner, repo, token);
-      
+
       expect(result).toBeDefined();
       expect(result.repository.pullRequests.nodes).toEqual([]);
     });

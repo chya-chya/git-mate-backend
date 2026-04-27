@@ -64,7 +64,9 @@ describe('CollectionService', () => {
       });
       await service.syncRepository('repo-123', 1);
 
-      expect(mockEncryptionService.decrypt).toHaveBeenCalledWith('encrypted-token');
+      expect(mockEncryptionService.decrypt).toHaveBeenCalledWith(
+        'encrypted-token',
+      );
       expect(mockGithubProvider.fetchPullRequests).toHaveBeenCalledWith(
         'owner',
         'repo',

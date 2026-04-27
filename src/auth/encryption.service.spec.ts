@@ -34,10 +34,10 @@ describe('EncryptionService', () => {
   it('should encrypt and decrypt correctly', () => {
     const originalText = 'github-token-123';
     const encrypted = service.encrypt(originalText);
-    
+
     expect(encrypted).not.toBe(originalText);
     expect(encrypted).toContain(':'); // IV:AuthTag:Cipher
-    
+
     const decrypted = service.decrypt(encrypted);
     expect(decrypted).toBe(originalText);
   });

@@ -16,6 +16,14 @@
   - JWT 기반의 세션 관리.
   - Progressive Authorization(필요 시점에 권한 요청) 로직 구현.
 
+### 📂 User Module (`src/user`)
+
+- **역할**: 사용자의 계정 정보 및 서비스 이용 관련 데이터(토큰 등)를 관리합니다.
+- **주요 기능**:
+  - 사용자 프로필(ID, 유저명, 아바타 등) 조회.
+  - 사용 가능한 분석 토큰(`availableTokens`) 잔액 정보 제공.
+  - 인증된 사용자의 데이터 접근 제어.
+
 ### 📂 Analysis Module (`src/analysis`)
 
 - **역할**: 수집된 데이터를 가공하고 LLM(Large Language Model)을 통해 분석합니다.
@@ -56,6 +64,7 @@ src/
 ├── app.module.ts        # 모든 모듈을 통합하는 루트 모듈
 ├── main.ts              # 서버 엔트리 포인트 및 전역 설정
 ├── auth/                # GitHub OAuth 및 인증 모듈
+├── user/                # 사용자 정보 및 토큰 관리 모듈
 ├── analysis/            # LLM 분석 및 지표 산출 모듈
 ├── collection/          # GitHub 데이터 수집 모듈
 └── prisma/              # 데이터베이스(Prisma) 연동 모듈

@@ -11,5 +11,8 @@ export interface IGithubProvider {
 }
 
 export interface ICollectionService {
-  syncRepository(githubRepoId: string, userId: number): Promise<CollectedDataDto>;
+  syncRepository(
+    githubRepoId: string,
+    userId: number,
+  ): Promise<CollectedDataDto>;
 }

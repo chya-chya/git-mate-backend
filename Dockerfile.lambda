@@ -1,0 +1,47 @@
+# Build stage
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+# Dependency files copy
+COPY package*.json ./
+COPY prisma ./prisma/
+
+# Install dependencies
+RUN npm install
+
+# Copy source code
+COPY . .
+
+# Generate Prisma Client (with binaryTargets defined in schema)
+RUN npx prisma generate
+
+# Build the application
+RUN npm run build
+
+# Production stage
+FROM node:20-alpine
+
+# Add AWS Lambda Web Adapter
+# This extension allows the NestJS HTTP server to run on AWS Lambda without code changes.
+COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:0.8.4 /lambda-adapter /opt/extensions/lambda-adapter
+
+WORKDIR /app
+
+# Copy built assets and production dependencies
+COPY --from=builder /app/package*.json ./
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/prisma ./prisma
+
+# Set environment variables for Lambda
+ENV PORT=3000
+ENV NODE_ENV=production
+
+# Expose port (Internal use for Lambda Adapter)
+EXPOSE 3000
+
+# Use node directly for better performance and signal handling in Lambda
+# Note: Since there are .ts files in root (like prisma.config.ts), 
+# NestJS preserves the 'src' directory structure in 'dist'.
+CMD ["node", "dist/src/main.js"]

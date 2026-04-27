@@ -73,11 +73,32 @@ export class GithubProvider implements IGithubProvider {
    */
   async fetchRepositories(token: string): Promise<any[]> {
     const octokit = new Octokit({ auth: token });
-    const { data } = await octokit.repos.listForAuthenticatedUser({
+    const { data: userRepos } = await octokit.repos.listForAuthenticatedUser({
       sort: 'updated',
       per_page: 100,
       affiliation: 'owner,collaborator,organization_member',
     });
-    return data;
+
+    const orgRepos: any[] = [];
+    try {
+      const { data: orgs } = await octokit.orgs.listForAuthenticatedUser();
+      for (const org of orgs) {
+        const { data: repos } = await octokit.repos.listForOrg({
+          org: org.login,
+          type: 'all',
+          sort: 'updated',
+          per_page: 100,
+        });
+        orgRepos.push(...repos);
+      }
+    } catch (e) {
+      console.error('Failed to fetch org repos explicitly', e);
+    }
+
+    const allReposMap = new Map();
+    userRepos.forEach((r) => allReposMap.set(r.id, r));
+    orgRepos.forEach((r) => allReposMap.set(r.id, r));
+
+    return Array.from(allReposMap.values());
   }
 }

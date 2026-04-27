@@ -119,3 +119,13 @@ export class CollectedDataDto {
   @ApiProperty({ type: [PullRequestDto] })
   pullRequests: PullRequestDto[];
 }
+
+export class EstimateResponseDto {
+  @ApiProperty({ description: 'Total PRs extracted from GitHub' })
+  prCount: number;
+
+  @ApiProperty({
+    description: 'Estimated tokens using js-tiktoken based on prompt',
+  })
+  estimatedTokens: number;
+}

@@ -28,13 +28,30 @@ export class StatService {
     const weightNew = 0.3; // Recent weight
 
     const updatedData = {
-      actionableScore: existingStat.actionableScore * weightOld + newMetrics.actionableScore * weightNew,
-      feedbackAcceptScore: existingStat.feedbackAcceptScore * weightOld + newMetrics.feedbackAcceptScore * weightNew,
-      avgCycleTimeHours: existingStat.avgCycleTimeHours * weightOld + newMetrics.avgCycleTimeHours * weightNew,
-      logicScore: existingStat.logicScore * weightOld + newMetrics.logicScore * weightNew,
-      architectureScore: existingStat.architectureScore * weightOld + newMetrics.architectureScore * weightNew,
-      dbScore: existingStat.dbScore * weightOld + newMetrics.dbScore * weightNew,
-      infraScore: existingStat.infraScore * weightOld + newMetrics.infraScore * weightNew,
+      mutualRespectScore:
+        existingStat.mutualRespectScore * weightOld +
+        newMetrics.mutualRespectScore * weightNew,
+      conflictManagementScore:
+        existingStat.conflictManagementScore * weightOld +
+        newMetrics.conflictManagementScore * weightNew,
+      logicalProblemScore:
+        existingStat.logicalProblemScore * weightOld +
+        newMetrics.logicalProblemScore * weightNew,
+      reviewGuidingScore:
+        existingStat.reviewGuidingScore * weightOld +
+        newMetrics.reviewGuidingScore * weightNew,
+      documentationScore:
+        existingStat.documentationScore * weightOld +
+        newMetrics.documentationScore * weightNew,
+      knowledgeSharingScore:
+        existingStat.knowledgeSharingScore * weightOld +
+        newMetrics.knowledgeSharingScore * weightNew,
+      technicalInfluenceScore:
+        existingStat.technicalInfluenceScore * weightOld +
+        newMetrics.technicalInfluenceScore * weightNew,
+      codeStabilityScore:
+        existingStat.codeStabilityScore * weightOld +
+        newMetrics.codeStabilityScore * weightNew,
     };
 
     return (this.prisma as any).userStat.update({

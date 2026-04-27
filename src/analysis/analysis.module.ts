@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { AnalysisService } from './analysis.service';
 import { AnalysisController } from './analysis.controller';
+import { PublicAnalysisController } from './public-analysis.controller';
 import { RefinerService } from './refiner.service';
 import { PreprocessorService } from './preprocessor.service';
 import { LlmProviderService } from './llm-provider.service';
@@ -8,7 +9,7 @@ import { MetricCalculatorService } from './metric-calculator.service';
 import { StatService } from './stat.service';
 
 @Module({
-  controllers: [AnalysisController],
+  controllers: [AnalysisController, PublicAnalysisController],
   providers: [
     AnalysisService,
     RefinerService,

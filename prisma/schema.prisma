@@ -3,6 +3,7 @@
 
 generator client {
   provider = "prisma-client-js"
+  binaryTargets = ["native", "rhel-openssl-3.0.x"]
 }
 
 datasource db {
@@ -18,10 +19,14 @@ model User {
   hashedRefreshToken String? // Hashed Refresh Token
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
+  availableTokens    Int      @default(100000)
 
   stats        UserStat?
   repositories Repository[]
   reports      AnalysisReport[]
+
+  representativeReportId Int?            @unique
+  representativeReport   AnalysisReport? @relation("RepresentativeReport", fields: [representativeReportId], references: [id])
 
   @@map("users")
 }
@@ -31,15 +36,14 @@ model UserStat {
   userId Int  @unique
   user   User @relation(fields: [userId], references: [id])
 
-  actionableScore     Float @default(0)
-  feedbackAcceptScore Float @default(0)
-  avgCycleTimeHours   Float @default(0)
-
-  // Domain Focus Scores
-  infraScore        Float @default(0)
-  dbScore           Float @default(0)
-  architectureScore Float @default(0)
-  logicScore        Float @default(0)
+  mutualRespectScore      Float @default(0)
+  conflictManagementScore Float @default(0)
+  logicalProblemScore     Float @default(0)
+  reviewGuidingScore      Float @default(0)
+  documentationScore      Float @default(0)
+  knowledgeSharingScore   Float @default(0)
+  technicalInfluenceScore Float @default(0)
+  codeStabilityScore      Float @default(0)
 
   updatedAt DateTime @updatedAt
 
@@ -73,5 +77,9 @@ model AnalysisReport {
 
   metrics Json? // Stores detailed analysis data from LLM
 
+  isShared      Boolean @default(false)
+  representedBy User?   @relation("RepresentativeReport")
+
   @@map("analysis_reports")
 }
+

@@ -1,6 +1,11 @@
 import { Controller, Get, UseGuards, Req, Res, Post } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
-import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiResponse,
+  ApiBearerAuth,
+} from '@nestjs/swagger';
 import { AuthService } from './auth.service';
 
 @ApiTags('Auth')
@@ -22,8 +27,8 @@ export class AuthController {
     const tokens = await this.authService.login(user);
 
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-    const redirectUrl = `${frontendUrl}/auth/callback?access_token=${tokens.access_token}&username=${user.username}`;
-    
+    const redirectUrl = `${frontendUrl}/auth/callback?access_token=${tokens.access_token}&refresh_token=${tokens.refresh_token}&username=${user.username}`;
+
     res.redirect(redirectUrl);
   }
 
