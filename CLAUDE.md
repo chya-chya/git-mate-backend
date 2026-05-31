@@ -49,4 +49,14 @@
 - 린트 검사 및 수정: `npm run lint`
 - 코드 포맷팅: `npm run format`
 - 프리즈마 생태계: `npx prisma generate` / `npx prisma db push` (DB 수정 시)
-- 테스트 실행: `npm run test`
+## 11. Deployment (AWS Lambda)
+- **배포 스크립트:** `./scripts/deploy_lambda.sh`
+- **배포 설정:** 보안 및 관리 편의성을 위해 다음 항목을 `.env` 파일에서 관리합니다.
+  - `AWS_ACCOUNT_ID`, `AWS_REGION`, `AWS_ECR_IMAGE_NAME`, `AWS_LAMBDA_FUNCTION_NAME`
+- **실행 방법:**
+  ```bash
+  # 배포 실행
+  ./scripts/deploy_lambda.sh
+  ```
+- **핵심 설정 (스크립트 내부):**
+  - `--platform linux/amd64` (Lambda 호환성) / `--provenance=false` (매니페스트 호환성)

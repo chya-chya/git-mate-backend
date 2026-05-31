@@ -87,7 +87,11 @@ export class CollectionService implements ICollectionService {
 
     // 🚀 Trigger Analysis (Await so Lambda doesn't exit early)
     // AWS Lambda will freeze execution if we return before this completes.
-    await this.analysisService.runAnalysis(userId, repository.id, collectedData);
+    await this.analysisService.runAnalysis(
+      userId,
+      repository.id,
+      collectedData,
+    );
 
     return collectedData;
   }
