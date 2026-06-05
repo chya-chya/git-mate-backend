@@ -30,7 +30,9 @@ describe('CollectionService', () => {
 
     mockAnalysisService = {
       runAnalysis: jest.fn().mockResolvedValue({}),
-      estimateTokens: jest.fn().mockResolvedValue({ prCount: 0, estimatedTokens: 0 }),
+      estimateTokens: jest
+        .fn()
+        .mockResolvedValue({ prCount: 0, estimatedTokens: 0 }),
     };
 
     const module: TestingModule = await Test.createTestingModule({
