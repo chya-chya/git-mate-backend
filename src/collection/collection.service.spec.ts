@@ -3,12 +3,14 @@ import { CollectionService } from './collection.service';
 import { GithubProvider } from './github.provider';
 import { PrismaService } from '../prisma/prisma.service';
 import { EncryptionService } from '../auth/encryption.service';
+import { AnalysisService } from '../analysis/analysis.service';
 
 describe('CollectionService', () => {
   let service: CollectionService;
   let mockGithubProvider: Partial<GithubProvider>;
   let mockPrismaService: any;
   let mockEncryptionService: Partial<EncryptionService>;
+  let mockAnalysisService: Partial<AnalysisService>;
 
   beforeEach(async () => {
     mockGithubProvider = {
@@ -26,12 +28,18 @@ describe('CollectionService', () => {
       decrypt: jest.fn().mockReturnValue('decrypted-token'),
     };
 
+    mockAnalysisService = {
+      runAnalysis: jest.fn().mockResolvedValue({}),
+      estimateTokens: jest.fn().mockResolvedValue({ prCount: 0, estimatedTokens: 0 }),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         CollectionService,
         { provide: GithubProvider, useValue: mockGithubProvider },
         { provide: PrismaService, useValue: mockPrismaService },
         { provide: EncryptionService, useValue: mockEncryptionService },
+        { provide: AnalysisService, useValue: mockAnalysisService },
       ],
     }).compile();
 
