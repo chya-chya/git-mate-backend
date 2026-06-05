@@ -8,6 +8,8 @@ import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool, PoolConfig } from 'pg';
 import 'dotenv/config';
+import * as fs from 'fs';
+import * as path from 'path';
 
 @Injectable()
 export class PrismaService
@@ -39,9 +41,33 @@ export class PrismaService
     if (isLocal) {
       poolConfig.ssl = false;
     } else {
-      poolConfig.ssl = {
-        rejectUnauthorized: false,
-      };
+      const caCertPath = path.resolve(process.cwd(), 'certs/supabase-ca.crt');
+      let caCert: string | undefined;
+
+      try {
+        if (fs.existsSync(caCertPath)) {
+          caCert = fs.readFileSync(caCertPath, 'utf8');
+        } else {
+          Logger.warn(
+            `SSL CA file not found at ${caCertPath}. Falling back to unverified SSL (Insecure!).`,
+            PrismaService.name,
+          );
+        }
+      } catch (err) {
+        Logger.error(
+          `Failed to read SSL CA certificate: ${err instanceof Error ? err.message : String(err)}`,
+          PrismaService.name,
+        );
+      }
+
+      poolConfig.ssl = caCert
+        ? {
+            rejectUnauthorized: true,
+            ca: caCert,
+          }
+        : {
+            rejectUnauthorized: false,
+          };
     }
 
     const pool = new Pool(poolConfig);
