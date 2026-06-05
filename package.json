@@ -95,5 +95,12 @@
     ],
     "coverageDirectory": "../coverage",
     "testEnvironment": "node"
+  },
+  "overrides": {
+    "brace-expansion": "^1.1.13",
+    "@hono/node-server": "^1.19.13",
+    "@octokit/request-error": "^5.1.0",
+    "@octokit/request": "^8.4.0",
+    "@octokit/plugin-paginate-rest": "^9.2.1"
   }
 }
