@@ -62,6 +62,7 @@ export class CollectionService implements ICollectionService {
       githubRepoId,
       owner,
       repo: repoName,
+      targetUser: repository.owner.username,
       pullRequests: githubData.repository.pullRequests.nodes.map((pr) => ({
         number: pr.number,
         title: pr.title,
@@ -139,6 +140,7 @@ export class CollectionService implements ICollectionService {
       githubRepoId,
       owner,
       repo: repoName,
+      targetUser: repository.owner.username,
       pullRequests: githubData.repository.pullRequests.nodes.map((pr) => ({
         number: pr.number,
         title: pr.title,

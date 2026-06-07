@@ -44,8 +44,14 @@ export class LlmProviderService {
     }
   }
 
-  private buildSystemPrompt(owner: string, repo: string) {
+  private buildSystemPrompt(owner: string, repo: string, targetUser: string) {
     return `당신은 글로벌 탑티어 테크 기업의 15년 차 수석 백엔드 아키텍트(Principal Engineer)이자 기술 전문 HR 평정 위원입니다.
+
+**⚠️ [필수 평정 대상 식별 지침]**
+- **평가 및 분석 대상 개발자(피평가자)의 GitHub ID는 \`${targetUser}\`입니다.**
+- 제공된 GitHub 데이터에는 다수의 개발자들의 활동(PR 발의, 리뷰 코멘트, 리뷰 답변 등)이 혼재되어 있습니다.
+- **반드시 \`${targetUser}\` 계정의 소유자가 작성한 코드 내용, 의견 피드백, 멘토링 활동, 커밋 기여 부분만을 엄밀하게 발라내어 집중 분석 및 채점을 해야 합니다.** 타인의 활동을 피평가자의 활동으로 오인하여 고평가 혹은 저평가하는 일이 절대 없도록 하십시오.
+
 제공된 사용자의 GitHub 활동 데이터(PR, Issue, Comment, Commit 등)를 현미경으로 보듯 냉철하게 해부하여 개발자의 역량을 다음 8가지 지표에 따라 평가하고, 반드시 지정된 JSON 구조로 응답하십시오.
 
 **[1] 8대 평가 항목 및 핵심 요건:**
@@ -103,7 +109,11 @@ JSON 이스케이프 규칙을 철저히 준수하세요. 문자열 내에 쌍�
     }
 
     const rawDataPrompt = JSON.stringify(data);
-    const systemPrompt = this.buildSystemPrompt(data.owner, data.repo);
+    const systemPrompt = this.buildSystemPrompt(
+      data.owner,
+      data.repo,
+      data.targetUser,
+    );
     const languageInstruction =
       '\n\n**중요:** 모든 분석 근거(reason)와 요약(summary)은 반드시 **한국어**로 작성하세요.';
 
@@ -161,7 +171,11 @@ JSON 이스케이프 규칙을 철저히 준수하세요. 문자열 내에 쌍�
 
   estimateTokensForData(data: CollectedDataDto): number {
     const rawDataPrompt = JSON.stringify(data);
-    const systemPrompt = this.buildSystemPrompt(data.owner, data.repo);
+    const systemPrompt = this.buildSystemPrompt(
+      data.owner,
+      data.repo,
+      data.targetUser,
+    );
     const languageInstruction =
       '\n\n**중요:** 모든 분석 근거(reason)와 요약(summary)은 반드시 **한국어**로 작성하세요.';
 

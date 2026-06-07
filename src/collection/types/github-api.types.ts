@@ -126,6 +126,11 @@ export class CollectedDataDto {
   @ApiProperty()
   repo: string;
 
+  @ApiProperty({
+    description: 'The GitHub username of the user being evaluated',
+  })
+  targetUser: string;
+
   @ApiProperty({ type: [PullRequestDto] })
   pullRequests: PullRequestDto[];
 }
