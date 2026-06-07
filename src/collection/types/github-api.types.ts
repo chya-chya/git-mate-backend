@@ -31,6 +31,7 @@ export interface PullRequestNode {
   title: string;
   body: string;
   state: 'OPEN' | 'MERGED' | 'CLOSED';
+  permalink: string;
   author: {
     login: string;
   };
@@ -108,6 +109,9 @@ export class PullRequestDto {
   @ApiProperty()
   updatedAt: string;
 
+  @ApiProperty()
+  permalink: string;
+
   @ApiProperty({ type: [ReviewDto] })
   reviews: ReviewDto[];
 }
@@ -115,6 +119,12 @@ export class PullRequestDto {
 export class CollectedDataDto {
   @ApiProperty()
   githubRepoId: string;
+
+  @ApiProperty()
+  owner: string;
+
+  @ApiProperty()
+  repo: string;
 
   @ApiProperty({ type: [PullRequestDto] })
   pullRequests: PullRequestDto[];

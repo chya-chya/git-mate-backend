@@ -26,6 +26,7 @@ export class GithubProvider implements IGithubProvider {
               title
               body
               state
+              permalink
               author {
                 login
               }

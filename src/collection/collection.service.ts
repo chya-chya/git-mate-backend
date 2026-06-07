@@ -60,12 +60,15 @@ export class CollectionService implements ICollectionService {
     // Transform data
     const collectedData: CollectedDataDto = {
       githubRepoId,
+      owner,
+      repo: repoName,
       pullRequests: githubData.repository.pullRequests.nodes.map((pr) => ({
         number: pr.number,
         title: pr.title,
         body: pr.body,
         author: pr.author.login,
         updatedAt: pr.updatedAt,
+        permalink: pr.permalink,
         reviews: pr.reviews.nodes.map((review) => ({
           author: review.author.login,
           body: review.body,
@@ -134,12 +137,15 @@ export class CollectionService implements ICollectionService {
 
     const collectedData: CollectedDataDto = {
       githubRepoId,
+      owner,
+      repo: repoName,
       pullRequests: githubData.repository.pullRequests.nodes.map((pr) => ({
         number: pr.number,
         title: pr.title,
         body: pr.body,
         author: pr.author.login,
         updatedAt: pr.updatedAt,
+        permalink: pr.permalink,
         reviews: pr.reviews.nodes.map((review) => ({
           author: review.author.login,
           body: review.body,

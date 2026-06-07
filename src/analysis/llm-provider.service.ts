@@ -44,7 +44,7 @@ export class LlmProviderService {
     }
   }
 
-  private buildSystemPrompt() {
+  private buildSystemPrompt(owner: string, repo: string) {
     return `당신은 글로벌 탑티어 테크 기업의 15년 차 수석 백엔드 아키텍트(Principal Engineer)이자 기술 전문 HR 평정 위원입니다.
 제공된 사용자의 GitHub 활동 데이터(PR, Issue, Comment, Commit 등)를 현미경으로 보듯 냉철하게 해부하여 개발자의 역량을 다음 8가지 지표에 따라 평가하고, 반드시 지정된 JSON 구조로 응답하십시오.
 
@@ -67,7 +67,7 @@ export class LlmProviderService {
 **[3] 출력 포맷 및 필드 규칙 (뻔한 조언 원천 금지):**
 각 항목은 다음 4가지 필드로 채워진 객체로 구조화하십시오.
 * \`score\`: 루브릭에 따른 엄격한 소수점 첫째 자리 점수 (1.0 ~ 5.0)
-* \`reason\`: 주관적 칭찬이나 단순 행동 요약을 금지합니다. 반드시 제공된 데이터 내에서 [증거: PR #번호(링크를 반드시 첨부하도록 한다) / 커밋해시]를 정확히 명시하고, 소프트웨어 엔지니어링 전문 용어(예: 시간/공간 복잡도, 모듈 결합도 및 응집도, 상태 관리, 메모리 누수, 렌더링 최적화, 동시성 제어 등 해당 도메인의 핵심 키워드)를 사용하여 시스템에 입힌 아키텍처적 및 엔지니어링적 임팩트를 논증하십시오.
+* \`reason\`: 주관적 칭찬이나 단순 행동 요약을 금지합니다. 반드시 제공된 데이터 내에서 [증거: PR #번호(링크는 반드시 https://github.com/${owner}/${repo}/pull/번호 형태로 첨부하도록 한다) / 커밋해시]를 정확히 명시하고, 소프트웨어 엔지니어링 전문 용어(예: 시간/공간 복잡도, 모듈 결합도 및 응집도, 상태 관리, 메모리 누수, 렌더링 최적화, 동시성 제어 등 해당 도메인의 핵심 키워드)를 사용하여 시스템에 입힌 아키텍처적 및 엔지니어링적 임팩트를 논증하십시오.
 * \`improvement\`: "앞으로도 이 습관을 유지하라" 같은 조언을 원천 금지합니다. 피평가자가 적용한 기술, 프레임워크, 또는 구현 패턴의 '태생적 한계'나 '컴퓨팅 자원/유지보수 생산성 간의 트레이드오프(Trade-off)'를 예리하게 지적하고, 이를 극복하기 위해 나아가야 할 한 단계 높은 소프트웨어 아키텍처적 극복 과제를 단 한 문장으로 엄격히 기술하십시오.
 * \`example\`: \`improvement\`에서 지적한 기술적 한계와 트레이드오프를 기반으로, 피평가자가 향후 코드 리뷰나 사내 기술 공유 채널(Slack, Issue 등)에서 실제 팀원들과 논의할 때 즉시 복사·붙여넣기해서 쓸 수 있는 실전 소통 템플릿(GitHub Comment / Slack Message 형태)을 구체적인 기술 키워드를 채워 직접 작성하십시오. (예: "현재 구조는 X의 한계가 있어 다음 단계로 Y 패턴 도입을 제안합니다. 코드 레벨에서는..." 과 같이 동료 엔지니어의 액션을 이끌어내는 실전 소통 양식으로 작성되어야 합니다.)
 
@@ -75,7 +75,7 @@ export class LlmProviderService {
 {
   "code_stability": {
     "score": 4.0,
-    "reason": "[[PR #194](https://github.com/example/repo/pull/194)] 외부 의존성이 높은 SSE(Server-Sent Events) 커넥션 제어 로직에서 주기적인 하드코딩 타이머 인터벌을 외부 컨피그로 격리했습니다. 이를 통해 네트워크 타임아웃 및 재연결 오버헤드 발생 시 스레드 풀이 고갈되는 리스크를 방어하고, 인메모리 테스트 시 가상 클락을 주입할 수 있도록 결합도를 낮추어 테스트 안정성(Deterministic Test)을 확보하는 엔지니어링 임팩트를 냈습니다.",
+    "reason": "[[PR #194](https://github.com/${owner}/${repo}/pull/194)] 외부 의존성이 높은 SSE(Server-Sent Events) 커넥션 제어 로직에서 주기적인 하드코딩 타이머 인터벌을 외부 컨피그로 격리했습니다. 이를 통해 네트워크 타임아웃 및 재연결 오버헤드 발생 시 스레드 풀이 고갈되는 리스크를 방어하고, 인메모리 테스트 시 가상 클락을 주입할 수 있도록 결합도를 낮추어 테스트 안정성(Deterministic Test)을 확보하는 엔지니어링 임팩트를 냈습니다.",
     "improvement": "다만 현재의 컨피그 외부화는 단순 폴링 주기에 국한되어 있어, 대규모 커넥션 폭발(Thundering Herd) 발생 시 게이트웨이 및 가비지 컬렉션(GC)에 가해지는 스파이크 부하를 동적으로 제어할 수 없는 태생적 한계가 있습니다.",
     "example": "@team 여러분, PR #194에서 SSE 타이머 인터벌을 외부화하여 1차 격리는 마쳤지만, 클라이언트 동시 접속 급증 시 게이트웨이 메모리 누수나 스파이크 부하 리스크가 여전히 남아있습니다. 이를 보완하기 위해 다음 스프린트에서는 지수 백오프(Exponential Backoff)와 지터(Jitter) 알고리즘을 클라이언트 커넥션 재시도 로직에 도입하는 방향을 제안하고 싶은데, 다들 어떻게 생각하시나요?"
   }
@@ -103,7 +103,7 @@ JSON 이스케이프 규칙을 철저히 준수하세요. 문자열 내에 쌍�
     }
 
     const rawDataPrompt = JSON.stringify(data);
-    const systemPrompt = this.buildSystemPrompt();
+    const systemPrompt = this.buildSystemPrompt(data.owner, data.repo);
     const languageInstruction =
       '\n\n**중요:** 모든 분석 근거(reason)와 요약(summary)은 반드시 **한국어**로 작성하세요.';
 
@@ -161,7 +161,7 @@ JSON 이스케이프 규칙을 철저히 준수하세요. 문자열 내에 쌍�
 
   estimateTokensForData(data: CollectedDataDto): number {
     const rawDataPrompt = JSON.stringify(data);
-    const systemPrompt = this.buildSystemPrompt();
+    const systemPrompt = this.buildSystemPrompt(data.owner, data.repo);
     const languageInstruction =
       '\n\n**중요:** 모든 분석 근거(reason)와 요약(summary)은 반드시 **한국어**로 작성하세요.';
 
