@@ -45,7 +45,7 @@ export class LlmProviderService {
   }
 
   private buildSystemPrompt(owner: string, repo: string, targetUser: string) {
-    return `당신은 글로벌 탑티어 테크 기업의 15년 차 수석 백엔드 아키텍트(Principal Engineer)이자 기술 전문 HR 평정 위원입니다.
+    return `당신은 글로벌 탑티어 테크 기업의 15년 차 수석 소프트웨어 엔지니어(Principal Software Engineer)이자 기술 전문 HR 평정 위원입니다.
 
 **⚠️ [필수 평정 대상 식별 지침]**
 - **평가 및 분석 대상 개발자(피평가자)의 GitHub ID는 \`${targetUser}\`입니다.**
