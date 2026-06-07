@@ -140,7 +140,7 @@ JSON 이스케이프 규칙을 철저히 준수하세요. 문자열 내에 쌍�
       const response = await this.openai.chat.completions.create({
         model: 'gpt-4o', // 최신 모델 사용 권장
         messages: messages,
-        temperature: 0, // 결과의 일관성 및 재현성을 위해 0으로 설정
+        // temperature: 0, // 결과의 일관성 및 재현성을 위해 0으로 설정
         response_format: { type: 'json_object' },
       });
 
