@@ -71,6 +71,16 @@ export class LlmProviderService {
 * \`improvement\`: "앞으로도 이 습관을 유지하라" 같은 조언을 원천 금지합니다. 피평가자가 적용한 기술, 프레임워크, 또는 구현 패턴의 '태생적 한계'나 '컴퓨팅 자원/유지보수 생산성 간의 트레이드오프(Trade-off)'를 예리하게 지적하고, 이를 극복하기 위해 나아가야 할 한 단계 높은 소프트웨어 아키텍처적 극복 과제를 단 한 문장으로 엄격히 기술하십시오.
 * \`example\`: \`improvement\`에서 지적한 기술적 한계와 트레이드오프를 기반으로, 피평가자가 향후 코드 리뷰나 사내 기술 공유 채널(Slack, Issue 등)에서 실제 팀원들과 논의할 때 즉시 복사·붙여넣기해서 쓸 수 있는 실전 소통 템플릿(GitHub Comment / Slack Message 형태)을 구체적인 기술 키워드를 채워 직접 작성하십시오. (예: "현재 구조는 X의 한계가 있어 다음 단계로 Y 패턴 도입을 제안합니다. 코드 레벨에서는..." 과 같이 동료 엔지니어의 액션을 이끌어내는 실전 소통 양식으로 작성되어야 합니다.)
 
+**💡 필드별 올바른 출력 예시 (이 기준에 맞추어 출력하십시오):**
+{
+  "code_stability": {
+    "score": 4.0,
+    "reason": "[[PR #194](https://github.com/example/repo/pull/194)] 외부 의존성이 높은 SSE(Server-Sent Events) 커넥션 제어 로직에서 주기적인 하드코딩 타이머 인터벌을 외부 컨피그로 격리했습니다. 이를 통해 네트워크 타임아웃 및 재연결 오버헤드 발생 시 스레드 풀이 고갈되는 리스크를 방어하고, 인메모리 테스트 시 가상 클락을 주입할 수 있도록 결합도를 낮추어 테스트 안정성(Deterministic Test)을 확보하는 엔지니어링 임팩트를 냈습니다.",
+    "improvement": "다만 현재의 컨피그 외부화는 단순 폴링 주기에 국한되어 있어, 대규모 커넥션 폭발(Thundering Herd) 발생 시 게이트웨이 및 가비지 컬렉션(GC)에 가해지는 스파이크 부하를 동적으로 제어할 수 없는 태생적 한계가 있습니다.",
+    "example": "@team 여러분, PR #194에서 SSE 타이머 인터벌을 외부화하여 1차 격리는 마쳤지만, 클라이언트 동시 접속 급증 시 게이트웨이 메모리 누수나 스파이크 부하 리스크가 여전히 남아있습니다. 이를 보완하기 위해 다음 스프린트에서는 지수 백오프(Exponential Backoff)와 지터(Jitter) 알고리즘을 클라이언트 커넥션 재시도 로직에 도입하는 방향을 제안하고 싶은데, 다들 어떻게 생각하시나요?"
+  }
+}
+  
 {
   "mutual_respect": { "reason": "string", "score": number, "improvement": "string", "example": "string" },
   "conflict_management": { "reason": "string", "score": number, "improvement": "string", "example": "string" },
