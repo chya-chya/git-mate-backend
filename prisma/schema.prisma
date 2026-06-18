@@ -17,6 +17,7 @@ model User {
   avatarUrl          String?
   githubToken        String? // Encrypted GitHub Access Token
   hashedRefreshToken String? // Hashed Refresh Token
+  status             UserStatus @default(ACTIVE)
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
   availableTokens    Int      @default(100000)
@@ -31,6 +32,11 @@ model User {
   representativeReport   AnalysisReport? @relation("RepresentativeReport", fields: [representativeReportId], references: [id])
 
   @@map("users")
+}
+
+enum UserStatus {
+  ACTIVE
+  DEACTIVATED
 }
 
 enum GithubInstallationAccountType {

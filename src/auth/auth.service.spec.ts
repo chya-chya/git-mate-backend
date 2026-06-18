@@ -1,4 +1,6 @@
 import { JwtService } from '@nestjs/jwt';
+import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
+import { UserStatus } from '@prisma/client';
 import { EncryptionService } from './encryption.service';
 import { AuthService } from './auth.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -6,6 +8,7 @@ import { PrismaService } from '../prisma/prisma.service';
 describe('AuthService', () => {
   const prisma = {
     user: {
+      findUnique: jest.fn(),
       upsert: jest.fn(),
       update: jest.fn(),
     },
@@ -15,6 +18,7 @@ describe('AuthService', () => {
   };
   const jwtService = {
     signAsync: jest.fn(),
+    verifyAsync: jest.fn(),
   };
 
   let service: AuthService;
@@ -30,6 +34,7 @@ describe('AuthService', () => {
 
   it('keeps OAuth login focused on user identity and stores the reduced-scope token', async () => {
     encryptionService.encrypt.mockReturnValue('encrypted-oauth-token');
+    prisma.user.findUnique.mockResolvedValue(null);
     prisma.user.upsert.mockResolvedValue({
       id: 7,
       githubId: '159997395',
@@ -54,6 +59,10 @@ describe('AuthService', () => {
     expect(encryptionService.encrypt).toHaveBeenCalledWith(
       'reduced-scope-oauth-token',
     );
+    expect(prisma.user.findUnique).toHaveBeenCalledWith({
+      where: { githubId: '159997395' },
+      select: { id: true, status: true },
+    });
     expect(prisma.user.upsert).toHaveBeenCalledWith({
       where: { githubId: '159997395' },
       update: {
@@ -68,6 +77,114 @@ describe('AuthService', () => {
         githubToken: 'encrypted-oauth-token',
       },
     });
+  });
+
+  it('does not restore a deactivated user during normal OAuth login', async () => {
+    prisma.user.findUnique.mockResolvedValue({
+      id: 7,
+      status: UserStatus.DEACTIVATED,
+    });
+
+    await expect(
+      service.validateUser({
+        githubId: '159997395',
+        username: 'chya-chya',
+        avatarUrl: 'https://avatars.githubusercontent.com/u/159997395',
+        accessToken: 'reduced-scope-oauth-token',
+      }),
+    ).rejects.toThrow(ForbiddenException);
+
+    expect(encryptionService.encrypt).not.toHaveBeenCalled();
+    expect(prisma.user.upsert).not.toHaveBeenCalled();
+  });
+
+  it('refreshes stored GitHub OAuth token data during reauthorization', async () => {
+    jwtService.verifyAsync.mockResolvedValue({
+      sub: 7,
+      purpose: 'github-oauth-reauthorize',
+    });
+    prisma.user.findUnique.mockResolvedValue({
+      id: 7,
+      githubId: '159997395',
+      status: UserStatus.ACTIVE,
+    });
+    encryptionService.encrypt.mockReturnValue('encrypted-updated-token');
+    prisma.user.update.mockResolvedValue({
+      id: 7,
+      githubId: '159997395',
+      username: 'chya-chya',
+      avatarUrl: 'https://avatars.githubusercontent.com/u/159997395',
+      githubToken: 'encrypted-updated-token',
+      status: UserStatus.ACTIVE,
+    });
+
+    await expect(
+      service.completeGithubOAuth(
+        {
+          githubId: '159997395',
+          username: 'chya-chya',
+          avatarUrl: 'https://avatars.githubusercontent.com/u/159997395',
+          accessToken: 'updated-oauth-token',
+        },
+        'signed-state',
+      ),
+    ).resolves.toMatchObject({
+      id: 7,
+      githubId: '159997395',
+      username: 'chya-chya',
+    });
+
+    expect(jwtService.verifyAsync).toHaveBeenCalledWith('signed-state');
+    expect(prisma.user.update).toHaveBeenCalledWith({
+      where: { id: 7 },
+      data: {
+        username: 'chya-chya',
+        avatarUrl: 'https://avatars.githubusercontent.com/u/159997395',
+        githubToken: 'encrypted-updated-token',
+      },
+    });
+  });
+
+  it('rejects reauthorization when the GitHub account does not match', async () => {
+    jwtService.verifyAsync.mockResolvedValue({
+      sub: 7,
+      purpose: 'github-oauth-reauthorize',
+    });
+    prisma.user.findUnique.mockResolvedValue({
+      id: 7,
+      githubId: '159997395',
+      status: UserStatus.ACTIVE,
+    });
+
+    await expect(
+      service.completeGithubOAuth(
+        {
+          githubId: '999999999',
+          username: 'other-user',
+          avatarUrl: 'https://avatars.githubusercontent.com/u/999999999',
+          accessToken: 'other-oauth-token',
+        },
+        'signed-state',
+      ),
+    ).rejects.toThrow(ForbiddenException);
+
+    expect(prisma.user.update).not.toHaveBeenCalled();
+  });
+
+  it('rejects invalid GitHub OAuth reauthorization state', async () => {
+    jwtService.verifyAsync.mockRejectedValue(new Error('invalid signature'));
+
+    await expect(
+      service.completeGithubOAuth(
+        {
+          githubId: '159997395',
+          username: 'chya-chya',
+          avatarUrl: 'https://avatars.githubusercontent.com/u/159997395',
+          accessToken: 'updated-oauth-token',
+        },
+        'invalid-state',
+      ),
+    ).rejects.toThrow(UnauthorizedException);
   });
 
   it('preserves the existing access and refresh token response shape', async () => {

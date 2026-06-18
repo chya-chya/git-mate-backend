@@ -1,0 +1,4 @@
+CREATE TYPE "UserStatus" AS ENUM ('ACTIVE', 'DEACTIVATED');
+
+ALTER TABLE "users"
+ADD COLUMN "status" "UserStatus" NOT NULL DEFAULT 'ACTIVE';

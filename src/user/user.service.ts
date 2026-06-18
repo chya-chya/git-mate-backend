@@ -1,6 +1,11 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { UserStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { UserResponseDto, UserTokensDto } from './dto/user.dto';
+import {
+  DeactivateUserResponseDto,
+  UserResponseDto,
+  UserTokensDto,
+} from './dto/user.dto';
 
 @Injectable()
 export class UserService {
@@ -38,5 +43,30 @@ export class UserService {
     }
 
     return user;
+  }
+
+  async deactivateUser(userId: number): Promise<DeactivateUserResponseDto> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const deactivatedUser = await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        status: UserStatus.DEACTIVATED,
+        hashedRefreshToken: null,
+      },
+      select: { status: true },
+    });
+
+    return {
+      success: true,
+      status: deactivatedUser.status,
+    };
   }
 }

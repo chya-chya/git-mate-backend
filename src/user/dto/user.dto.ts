@@ -1,4 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
+import { UserStatus } from '@prisma/client';
 
 export class UserResponseDto {
   @ApiProperty({ example: 1, description: 'User index ID' })
@@ -27,4 +28,19 @@ export class UserResponseDto {
 export class UserTokensDto {
   @ApiProperty({ example: 100000, description: 'Available analysis tokens' })
   availableTokens: number;
+}
+
+export class DeactivateUserResponseDto {
+  @ApiProperty({
+    example: true,
+    description: 'Whether account deactivation succeeded',
+  })
+  success: boolean;
+
+  @ApiProperty({
+    enum: UserStatus,
+    example: UserStatus.DEACTIVATED,
+    description: 'Updated account status',
+  })
+  status: UserStatus;
 }

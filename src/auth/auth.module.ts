@@ -7,6 +7,7 @@ import { AuthController } from './auth.controller';
 import { GithubStrategy } from './strategies/github.strategy';
 import { EncryptionService } from './encryption.service';
 import { PrismaModule } from '../prisma/prisma.module';
+import { GithubOAuthGuard } from './guards/github-oauth.guard';
 
 import { JwtStrategy } from './strategies/jwt.strategy';
 
@@ -17,13 +18,19 @@ import { JwtStrategy } from './strategies/jwt.strategy';
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
-      useFactory: async (configService: ConfigService) => ({
+      useFactory: (configService: ConfigService) => ({
         secret: configService.get<string>('JWT_SECRET'),
         signOptions: { expiresIn: '15m' },
       }),
     }),
   ],
-  providers: [AuthService, GithubStrategy, JwtStrategy, EncryptionService],
+  providers: [
+    AuthService,
+    GithubStrategy,
+    GithubOAuthGuard,
+    JwtStrategy,
+    EncryptionService,
+  ],
   controllers: [AuthController],
   exports: [AuthService, EncryptionService],
 })

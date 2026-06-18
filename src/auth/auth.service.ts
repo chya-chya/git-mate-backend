@@ -1,8 +1,14 @@
-import { Injectable, ForbiddenException } from '@nestjs/common';
+import {
+  Injectable,
+  ForbiddenException,
+  UnauthorizedException,
+} from '@nestjs/common';
+import { UserStatus } from '@prisma/client';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../prisma/prisma.service';
 import { EncryptionService } from './encryption.service';
+import type { GithubOAuthStatePayload } from './guards/github-oauth.guard';
 
 interface User {
   id: number;
@@ -10,6 +16,14 @@ interface User {
   githubId: string;
   avatarUrl?: string | null;
   githubToken?: string | null;
+  status?: UserStatus;
+}
+
+export interface GithubOAuthDetails {
+  githubId: string;
+  username: string;
+  avatarUrl: string;
+  accessToken: string;
 }
 
 @Injectable()
@@ -43,19 +57,26 @@ export class AuthService {
 
   async updateRefreshToken(userId: number, refreshToken: string) {
     const hashedRefreshToken = await bcrypt.hash(refreshToken, 10);
-    await (this.prisma as any).user.update({
+    await this.prisma.user.update({
       where: { id: userId },
       data: { hashedRefreshToken },
     });
   }
 
   async refreshTokens(userId: number, refreshToken: string) {
-    const user = await (this.prisma as any).user.findUnique({
+    const user = await this.prisma.user.findUnique({
       where: { id: userId },
     });
 
     if (!user || !user.hashedRefreshToken) {
       throw new ForbiddenException('Access Denied');
+    }
+
+    if (user.status === UserStatus.DEACTIVATED) {
+      throw new ForbiddenException({
+        code: 'ACCOUNT_DEACTIVATED',
+        message: 'Account is deactivated',
+      });
     }
 
     const refreshTokenMatches = await bcrypt.compare(
@@ -72,15 +93,35 @@ export class AuthService {
     return tokens;
   }
 
-  async validateUser(details: {
-    githubId: string;
-    username: string;
-    avatarUrl: string;
-    accessToken: string;
-  }) {
+  async completeGithubOAuth(details: GithubOAuthDetails, state?: unknown) {
+    if (!state) {
+      return this.validateUser(details);
+    }
+
+    if (typeof state !== 'string') {
+      throw new UnauthorizedException('Invalid GitHub OAuth state');
+    }
+
+    const payload = await this.verifyGithubOAuthState(state);
+    return this.reauthorizeGithubUser(payload.sub, details);
+  }
+
+  async validateUser(details: GithubOAuthDetails) {
+    const existingUser = await this.prisma.user.findUnique({
+      where: { githubId: details.githubId },
+      select: { id: true, status: true },
+    });
+
+    if (existingUser?.status === UserStatus.DEACTIVATED) {
+      throw new ForbiddenException({
+        code: 'ACCOUNT_DEACTIVATED',
+        message: 'Account is deactivated',
+      });
+    }
+
     const encryptedToken = this.encryptionService.encrypt(details.accessToken);
 
-    const user = await (this.prisma as any).user.upsert({
+    const user = await this.prisma.user.upsert({
       where: { githubId: details.githubId },
       update: {
         username: details.username,
@@ -96,5 +137,65 @@ export class AuthService {
     });
 
     return user;
+  }
+
+  async reauthorizeGithubUser(userId: number, details: GithubOAuthDetails) {
+    const existingUser = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        githubId: true,
+        status: true,
+      },
+    });
+
+    if (!existingUser) {
+      throw new UnauthorizedException('Invalid GitHub OAuth state');
+    }
+
+    if (existingUser.status === UserStatus.DEACTIVATED) {
+      throw new ForbiddenException({
+        code: 'ACCOUNT_DEACTIVATED',
+        message: 'Account is deactivated',
+      });
+    }
+
+    if (existingUser.githubId !== details.githubId) {
+      throw new ForbiddenException(
+        'GitHub account does not match the authenticated user',
+      );
+    }
+
+    const encryptedToken = this.encryptionService.encrypt(details.accessToken);
+
+    return this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        username: details.username,
+        avatarUrl: details.avatarUrl,
+        githubToken: encryptedToken,
+      },
+    });
+  }
+
+  private async verifyGithubOAuthState(
+    state: string,
+  ): Promise<GithubOAuthStatePayload> {
+    try {
+      const payload =
+        await this.jwtService.verifyAsync<GithubOAuthStatePayload>(state);
+
+      if (payload.purpose !== 'github-oauth-reauthorize') {
+        throw new UnauthorizedException('Invalid GitHub OAuth state');
+      }
+
+      return payload;
+    } catch (error) {
+      if (error instanceof UnauthorizedException) {
+        throw error;
+      }
+
+      throw new UnauthorizedException('Invalid GitHub OAuth state');
+    }
   }
 }

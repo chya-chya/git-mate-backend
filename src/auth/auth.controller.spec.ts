@@ -4,7 +4,7 @@ import { AuthService } from './auth.service';
 
 describe('AuthController', () => {
   const authService = {
-    validateUser: jest.fn(),
+    completeGithubOAuth: jest.fn(),
     login: jest.fn(),
   };
 
@@ -34,7 +34,7 @@ describe('AuthController', () => {
       username: oauthUser.username,
     };
     const redirect = jest.fn();
-    authService.validateUser.mockResolvedValue(savedUser);
+    authService.completeGithubOAuth.mockResolvedValue(savedUser);
     authService.login.mockResolvedValue({
       access_token: 'access-token',
       refresh_token: 'refresh-token',
@@ -45,8 +45,47 @@ describe('AuthController', () => {
       { redirect } as unknown as Response,
     );
 
-    expect(authService.validateUser).toHaveBeenCalledWith(oauthUser);
+    expect(authService.completeGithubOAuth).toHaveBeenCalledWith(
+      oauthUser,
+      undefined,
+    );
     expect(authService.login).toHaveBeenCalledWith(savedUser);
+    expect(redirect).toHaveBeenCalledWith(
+      'http://localhost:3001/auth/callback?access_token=access-token&refresh_token=refresh-token&username=chya-chya',
+    );
+  });
+
+  it('passes GitHub OAuth state to support reauthorization callbacks', async () => {
+    const oauthUser = {
+      githubId: '159997395',
+      username: 'chya-chya',
+      avatarUrl: 'https://avatars.githubusercontent.com/u/159997395',
+      accessToken: 'reauthorized-oauth-token',
+    };
+    const savedUser = {
+      id: 7,
+      githubId: oauthUser.githubId,
+      username: oauthUser.username,
+    };
+    const redirect = jest.fn();
+    authService.completeGithubOAuth.mockResolvedValue(savedUser);
+    authService.login.mockResolvedValue({
+      access_token: 'access-token',
+      refresh_token: 'refresh-token',
+    });
+
+    await controller.githubAuthRedirect(
+      {
+        user: oauthUser,
+        query: { state: 'signed-state' },
+      } as unknown as Request,
+      { redirect } as unknown as Response,
+    );
+
+    expect(authService.completeGithubOAuth).toHaveBeenCalledWith(
+      oauthUser,
+      'signed-state',
+    );
     expect(redirect).toHaveBeenCalledWith(
       'http://localhost:3001/auth/callback?access_token=access-token&refresh_token=refresh-token&username=chya-chya',
     );
