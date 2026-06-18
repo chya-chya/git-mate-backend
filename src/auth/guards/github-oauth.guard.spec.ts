@@ -1,4 +1,4 @@
-import { ExecutionContext, UnauthorizedException } from '@nestjs/common';
+import { ExecutionContext } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import type { Request } from 'express';
@@ -61,15 +61,13 @@ describe('GithubOAuthGuard', () => {
     );
   });
 
-  it('requires an access token for GitHub OAuth reauthorization', () => {
+  it('falls back to normal OAuth when reauthorization is opened directly in a browser', () => {
     const context = createContext({
       query: { mode: 'reauthorize' },
       headers: {},
     });
 
-    expect(() => guard.getAuthenticateOptions(context)).toThrow(
-      UnauthorizedException,
-    );
+    expect(guard.getAuthenticateOptions(context)).toEqual({});
   });
 });
 

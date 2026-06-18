@@ -38,9 +38,7 @@ export class GithubOAuthGuard extends AuthGuard('github') {
 
     const accessToken = this.extractBearerToken(request);
     if (!accessToken) {
-      throw new UnauthorizedException(
-        'GitHub OAuth reauthorization requires an access token',
-      );
+      return {};
     }
 
     let payload: { sub: number };
