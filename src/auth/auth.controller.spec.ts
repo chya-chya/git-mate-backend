@@ -5,6 +5,7 @@ import { AuthService } from './auth.service';
 describe('AuthController', () => {
   const authService = {
     completeGithubOAuth: jest.fn(),
+    createGithubReauthorizationUrl: jest.fn(),
     login: jest.fn(),
   };
 
@@ -89,5 +90,21 @@ describe('AuthController', () => {
     expect(redirect).toHaveBeenCalledWith(
       'http://localhost:3001/auth/callback?access_token=access-token&refresh_token=refresh-token&username=chya-chya',
     );
+  });
+
+  it('returns a reauthorization URL for the authenticated user', async () => {
+    authService.createGithubReauthorizationUrl.mockResolvedValue({
+      url: 'https://github.com/login/oauth/authorize?state=signed-state',
+    });
+
+    await expect(
+      controller.getGithubReauthorizeUrl({
+        user: { id: 7, username: 'chya-chya' },
+      } as unknown as Request),
+    ).resolves.toEqual({
+      url: 'https://github.com/login/oauth/authorize?state=signed-state',
+    });
+
+    expect(authService.createGithubReauthorizationUrl).toHaveBeenCalledWith(7);
   });
 });

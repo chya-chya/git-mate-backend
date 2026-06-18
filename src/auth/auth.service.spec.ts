@@ -1,6 +1,7 @@
 import { JwtService } from '@nestjs/jwt';
 import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import { UserStatus } from '@prisma/client';
+import { ConfigService } from '@nestjs/config';
 import { EncryptionService } from './encryption.service';
 import { AuthService } from './auth.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -20,6 +21,9 @@ describe('AuthService', () => {
     signAsync: jest.fn(),
     verifyAsync: jest.fn(),
   };
+  const configService = {
+    get: jest.fn(),
+  };
 
   let service: AuthService;
 
@@ -29,6 +33,7 @@ describe('AuthService', () => {
       prisma as unknown as PrismaService,
       encryptionService as unknown as EncryptionService,
       jwtService as unknown as JwtService,
+      configService as unknown as ConfigService,
     );
   });
 
@@ -185,6 +190,41 @@ describe('AuthService', () => {
         'invalid-state',
       ),
     ).rejects.toThrow(UnauthorizedException);
+  });
+
+  it('creates a GitHub reauthorization URL with signed state but without exposing access tokens', async () => {
+    configService.get.mockImplementation((key: string) => {
+      const values: Record<string, string> = {
+        GITHUB_CLIENT_ID: 'github-client-id',
+        GITHUB_CALLBACK_URL: 'https://api.example.com/auth/github/callback',
+      };
+
+      return values[key];
+    });
+    jwtService.signAsync.mockResolvedValue('signed-state');
+
+    const result = await service.createGithubReauthorizationUrl(7);
+    const url = new URL(result.url);
+
+    expect(url.origin).toBe('https://github.com');
+    expect(url.pathname).toBe('/login/oauth/authorize');
+    expect(url.searchParams.get('response_type')).toBe('code');
+    expect(url.searchParams.get('client_id')).toBe('github-client-id');
+    expect(url.searchParams.get('redirect_uri')).toBe(
+      'https://api.example.com/auth/github/callback',
+    );
+    expect(url.searchParams.get('scope')).toBe('read:user read:org');
+    expect(url.searchParams.get('state')).toBe('signed-state');
+    expect(result.url).not.toContain('access-token');
+    expect(jwtService.signAsync).toHaveBeenCalledWith(
+      {
+        sub: 7,
+        purpose: 'github-oauth-reauthorize',
+      },
+      {
+        expiresIn: '10m',
+      },
+    );
   });
 
   it('preserves the existing access and refresh token response shape', async () => {

@@ -4,11 +4,13 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { UserStatus } from '@prisma/client';
+import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../prisma/prisma.service';
 import { EncryptionService } from './encryption.service';
 import type { GithubOAuthStatePayload } from './guards/github-oauth.guard';
+import { GITHUB_OAUTH_SCOPES } from './strategies/github.strategy';
 
 interface User {
   id: number;
@@ -32,6 +34,7 @@ export class AuthService {
     private prisma: PrismaService,
     private encryptionService: EncryptionService,
     private jwtService: JwtService,
+    private configService: ConfigService,
   ) {}
 
   async login(user: User) {
@@ -104,6 +107,36 @@ export class AuthService {
 
     const payload = await this.verifyGithubOAuthState(state);
     return this.reauthorizeGithubUser(payload.sub, details);
+  }
+
+  async createGithubReauthorizationUrl(userId: number) {
+    const clientId = this.configService.get<string>('GITHUB_CLIENT_ID');
+    const callbackUrl = this.configService.get<string>('GITHUB_CALLBACK_URL');
+
+    if (!clientId || !callbackUrl) {
+      throw new Error(
+        'GitHub OAuth is not configured! Reauthorization URL cannot be created safely.',
+      );
+    }
+
+    const state = await this.jwtService.signAsync(
+      {
+        sub: userId,
+        purpose: 'github-oauth-reauthorize',
+      } satisfies GithubOAuthStatePayload,
+      {
+        expiresIn: '10m',
+      },
+    );
+
+    const url = new URL('https://github.com/login/oauth/authorize');
+    url.searchParams.set('response_type', 'code');
+    url.searchParams.set('client_id', clientId);
+    url.searchParams.set('redirect_uri', callbackUrl);
+    url.searchParams.set('scope', GITHUB_OAUTH_SCOPES.join(' '));
+    url.searchParams.set('state', state);
+
+    return { url: url.toString() };
   }
 
   async validateUser(details: GithubOAuthDetails) {

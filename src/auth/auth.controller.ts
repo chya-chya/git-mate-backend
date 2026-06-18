@@ -17,6 +17,7 @@ import {
 } from '@nestjs/swagger';
 import { AuthService } from './auth.service';
 import type { GithubOAuthDetails } from './auth.service';
+import { GithubReauthorizeUrlDto } from './dto/github-reauthorize-url.dto';
 import { GithubOAuthGuard } from './guards/github-oauth.guard';
 
 interface AuthenticatedRequest extends Request {
@@ -39,6 +40,17 @@ export class AuthController {
   @UseGuards(GithubOAuthGuard)
   @ApiOperation({ summary: 'GitHub OAuth Login or Reauthorization' })
   async githubAuth() {}
+
+  @Get('github/reauthorize-url')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Create GitHub OAuth reauthorization URL' })
+  @ApiResponse({ status: 200, type: GithubReauthorizeUrlDto })
+  async getGithubReauthorizeUrl(
+    @Req() req: AuthenticatedRequest,
+  ): Promise<GithubReauthorizeUrlDto> {
+    return this.authService.createGithubReauthorizationUrl(req.user.id);
+  }
 
   @Get('github/callback')
   @UseGuards(AuthGuard('github'))
