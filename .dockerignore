@@ -5,3 +5,8 @@ dist
 npm-debug.log
 docker-compose.yml
 Dockerfile
+
+# Keep GitHub App private keys out of the Docker build context.
+certs/*.pem
+certs/*.private-key
+certs/*private-key*

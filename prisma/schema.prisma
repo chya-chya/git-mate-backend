@@ -2,7 +2,7 @@
 // learn more about it in the docs: https://pris.ly/d/prisma-schema
 
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
   binaryTargets = ["native", "rhel-openssl-3.0.x"]
 }
 
@@ -21,14 +21,82 @@ model User {
   updatedAt          DateTime @updatedAt
   availableTokens    Int      @default(100000)
 
-  stats        UserStat?
-  repositories Repository[]
-  reports      AnalysisReport[]
+  stats                  UserStat?
+  repositories           Repository[]
+  reports                AnalysisReport[]
+  githubInstallations    UserGithubInstallation[]
+  githubAppInstallStates GithubAppInstallState[]
 
   representativeReportId Int?            @unique
   representativeReport   AnalysisReport? @relation("RepresentativeReport", fields: [representativeReportId], references: [id])
 
   @@map("users")
+}
+
+enum GithubInstallationAccountType {
+  USER
+  ORGANIZATION
+}
+
+enum GithubInstallationStatus {
+  ACTIVE
+  SUSPENDED
+  DELETED
+}
+
+enum GithubInstallationLinkSource {
+  INSTALL_CALLBACK
+  AUTO_DISCOVERY
+}
+
+model GithubInstallation {
+  id                   Int                           @id @default(autoincrement())
+  githubInstallationId String                        @unique
+  accountId            String
+  accountLogin         String
+  accountType          GithubInstallationAccountType
+  repositorySelection  String
+  status               GithubInstallationStatus      @default(ACTIVE)
+  suspendedAt          DateTime?
+  deletedAt            DateTime?
+  githubCreatedAt      DateTime?
+  githubUpdatedAt      DateTime?
+  createdAt            DateTime                      @default(now())
+  updatedAt            DateTime                      @updatedAt
+
+  users UserGithubInstallation[]
+
+  @@index([accountType, accountLogin])
+  @@map("github_installations")
+}
+
+model UserGithubInstallation {
+  userId               Int
+  installationId       Int
+  source               GithubInstallationLinkSource
+  membershipVerifiedAt DateTime
+  linkedAt             DateTime                     @default(now())
+
+  user         User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  installation GithubInstallation @relation(fields: [installationId], references: [id], onDelete: Cascade)
+
+  @@id([userId, installationId])
+  @@index([installationId])
+  @@map("user_github_installations")
+}
+
+model GithubAppInstallState {
+  id         String    @id @default(uuid())
+  userId     Int
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("github_app_install_states")
 }
 
 model UserStat {
@@ -82,4 +150,3 @@ model AnalysisReport {
 
   @@map("analysis_reports")
 }
-

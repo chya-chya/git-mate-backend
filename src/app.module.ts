@@ -9,6 +9,7 @@ import { AnalysisModule } from './analysis/analysis.module';
 import { CollectionModule } from './collection/collection.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { UserModule } from './user/user.module';
+import { GithubAppModule } from './github-app/github-app.module';
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { UserModule } from './user/user.module';
     CollectionModule,
     PrismaModule,
     UserModule,
+    GithubAppModule,
   ],
   controllers: [AppController],
   providers: [

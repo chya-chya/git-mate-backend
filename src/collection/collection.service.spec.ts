@@ -1,88 +1,245 @@
+import { ForbiddenException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
+import { Octokit } from '@octokit/rest';
+import { AnalysisService } from '../analysis/analysis.service';
+import { GithubAppService } from '../github-app/github-app.service';
+import { GithubInstallationTokenService } from '../github-app/github-installation-token.service';
+import { PrismaService } from '../prisma/prisma.service';
 import { CollectionService } from './collection.service';
 import { GithubProvider } from './github.provider';
-import { PrismaService } from '../prisma/prisma.service';
-import { EncryptionService } from '../auth/encryption.service';
-import { AnalysisService } from '../analysis/analysis.service';
 
 describe('CollectionService', () => {
   let service: CollectionService;
-  let mockGithubProvider: Partial<GithubProvider>;
-  let mockPrismaService: any;
-  let mockEncryptionService: Partial<EncryptionService>;
-  let mockAnalysisService: Partial<AnalysisService>;
+  const githubProvider = {
+    fetchPullRequests: jest.fn(),
+  };
+  const prisma = {
+    user: {
+      findUnique: jest.fn(),
+    },
+    repository: {
+      findUnique: jest.fn(),
+      findMany: jest.fn(),
+      update: jest.fn(),
+      upsert: jest.fn(),
+    },
+  };
+  const analysisService = {
+    runAnalysis: jest.fn(),
+    estimateTokens: jest.fn(),
+  };
+  const installationTokens = {
+    executeForRepository: jest.fn(),
+    listAccessibleRepositories: jest.fn(),
+  };
+  const githubAppService = {
+    getInstallations: jest.fn(),
+  };
 
   beforeEach(async () => {
-    mockGithubProvider = {
-      fetchPullRequests: jest.fn(),
-    };
-
-    mockPrismaService = {
-      repository: {
-        findUnique: jest.fn(),
-        update: jest.fn(),
-      },
-    };
-
-    mockEncryptionService = {
-      decrypt: jest.fn().mockReturnValue('decrypted-token'),
-    };
-
-    mockAnalysisService = {
-      runAnalysis: jest.fn().mockResolvedValue({}),
-      estimateTokens: jest
-        .fn()
-        .mockResolvedValue({ prCount: 0, estimatedTokens: 0 }),
-    };
-
+    jest.clearAllMocks();
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         CollectionService,
-        { provide: GithubProvider, useValue: mockGithubProvider },
-        { provide: PrismaService, useValue: mockPrismaService },
-        { provide: EncryptionService, useValue: mockEncryptionService },
-        { provide: AnalysisService, useValue: mockAnalysisService },
+        { provide: GithubProvider, useValue: githubProvider },
+        { provide: PrismaService, useValue: prisma },
+        { provide: AnalysisService, useValue: analysisService },
+        { provide: GithubAppService, useValue: githubAppService },
+        {
+          provide: GithubInstallationTokenService,
+          useValue: installationTokens,
+        },
       ],
     }).compile();
 
-    service = module.get<CollectionService>(CollectionService);
+    service = module.get(CollectionService);
   });
 
-  it('should be defined', () => {
-    expect(service).toBeDefined();
+  it('fetches pull requests through an installation token', async () => {
+    const repository = {
+      id: 1,
+      githubRepoId: '11',
+      fullName: 'owner/private-repo',
+      lastSyncTime: new Date('2026-01-01T00:00:00Z'),
+      ownerId: 7,
+      owner: { username: 'developer' },
+    };
+    prisma.repository.findUnique.mockResolvedValue(repository);
+    githubProvider.fetchPullRequests.mockResolvedValue({
+      repository: { pullRequests: { nodes: [] } },
+    });
+    installationTokens.executeForRepository.mockImplementation(
+      async (
+        _userId: number,
+        _githubRepoId: string,
+        operation: (octokit: Octokit) => Promise<unknown>,
+      ) => operation({} as Octokit),
+    );
+    prisma.repository.update.mockResolvedValue({});
+    analysisService.runAnalysis.mockResolvedValue({});
+
+    await service.syncRepository('11', 7);
+
+    expect(installationTokens.executeForRepository).toHaveBeenCalledWith(
+      7,
+      '11',
+      expect.any(Function),
+    );
+    expect(githubProvider.fetchPullRequests).toHaveBeenCalledWith(
+      'owner',
+      'private-repo',
+      expect.anything(),
+      repository.lastSyncTime,
+    );
   });
 
-  describe('syncRepository', () => {
-    it('should decrypt token and fetch data from GitHub', async () => {
-      const mockRepo = {
+  it('preserves the existing sync response and analysis input contract', async () => {
+    const repository = {
+      id: 1,
+      githubRepoId: '11',
+      fullName: 'owner/private-repo',
+      lastSyncTime: null,
+      ownerId: 7,
+      owner: { username: 'developer' },
+    };
+    const githubData = {
+      repository: {
+        pullRequests: {
+          nodes: [
+            {
+              number: 42,
+              title: 'Keep the API contract',
+              body: 'PR body',
+              author: { login: 'reviewer' },
+              updatedAt: '2026-06-12T00:00:00Z',
+              permalink: 'https://github.com/owner/private-repo/pull/42',
+              reviews: {
+                nodes: [
+                  {
+                    author: { login: 'maintainer' },
+                    body: 'Looks good',
+                    state: 'APPROVED',
+                    comments: {
+                      nodes: [
+                        {
+                          author: { login: 'maintainer' },
+                          body: 'Nice change',
+                          createdAt: '2026-06-12T00:01:00Z',
+                        },
+                      ],
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      },
+    };
+    const expectedResponse = {
+      githubRepoId: '11',
+      owner: 'owner',
+      repo: 'private-repo',
+      targetUser: 'developer',
+      pullRequests: [
+        {
+          number: 42,
+          title: 'Keep the API contract',
+          body: 'PR body',
+          author: 'reviewer',
+          updatedAt: '2026-06-12T00:00:00Z',
+          permalink: 'https://github.com/owner/private-repo/pull/42',
+          reviews: [
+            {
+              author: 'maintainer',
+              body: 'Looks good',
+              state: 'APPROVED',
+              comments: [
+                {
+                  author: 'maintainer',
+                  body: 'Nice change',
+                  createdAt: '2026-06-12T00:01:00Z',
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    prisma.repository.findUnique.mockResolvedValue(repository);
+    installationTokens.executeForRepository.mockImplementation(
+      async (
+        _userId: number,
+        _githubRepoId: string,
+        operation: (octokit: Octokit) => Promise<unknown>,
+      ) => operation({} as Octokit),
+    );
+    githubProvider.fetchPullRequests.mockResolvedValue(githubData);
+    prisma.repository.update.mockResolvedValue({});
+    analysisService.runAnalysis.mockResolvedValue({});
+
+    await expect(service.syncRepository('11', 7)).resolves.toEqual(
+      expectedResponse,
+    );
+    expect(analysisService.runAnalysis).toHaveBeenCalledWith(
+      7,
+      1,
+      expectedResponse,
+    );
+  });
+
+  it('propagates a denied installation repository access check', async () => {
+    prisma.repository.findUnique.mockResolvedValue({
+      id: 1,
+      githubRepoId: '11',
+      fullName: 'owner/private-repo',
+      lastSyncTime: null,
+      ownerId: 7,
+      owner: { username: 'developer' },
+    });
+    installationTokens.executeForRepository.mockRejectedValue(
+      new ForbiddenException('Repository is not accessible'),
+    );
+
+    await expect(service.syncRepository('11', 7)).rejects.toBeInstanceOf(
+      ForbiddenException,
+    );
+    expect(githubProvider.fetchPullRequests).not.toHaveBeenCalled();
+  });
+
+  it('returns only repositories exposed by installations', async () => {
+    prisma.user.findUnique.mockResolvedValue({ id: 7 });
+    githubAppService.getInstallations.mockResolvedValue([]);
+    installationTokens.listAccessibleRepositories.mockResolvedValue([
+      {
+        id: 11,
+        fullName: 'owner/private-repo',
+        private: true,
+        installationId: '101',
+      },
+    ]);
+    prisma.repository.upsert.mockResolvedValue({});
+    prisma.repository.findMany.mockResolvedValue([
+      {
         id: 1,
-        githubRepoId: 'repo-123',
-        fullName: 'owner/repo',
-        lastSyncTime: new Date('2024-01-01'),
-        ownerId: 1,
-        owner: {
-          username: 'user1',
-          githubToken: 'encrypted-token',
-        },
-      };
+        githubRepoId: '11',
+        fullName: 'owner/private-repo',
+        ownerId: 7,
+      },
+    ]);
 
-      mockPrismaService.repository.findUnique.mockResolvedValue(mockRepo);
-      (mockGithubProvider.fetchPullRequests as jest.Mock).mockResolvedValue({
-        repository: {
-          pullRequests: { nodes: [] },
-        },
-      });
-      await service.syncRepository('repo-123', 1);
+    await service.getRepositories(7);
 
-      expect(mockEncryptionService.decrypt).toHaveBeenCalledWith(
-        'encrypted-token',
-      );
-      expect(mockGithubProvider.fetchPullRequests).toHaveBeenCalledWith(
-        'owner',
-        'repo',
-        'decrypted-token',
-        mockRepo.lastSyncTime,
-      );
+    expect(githubAppService.getInstallations).toHaveBeenCalledWith(7);
+    expect(installationTokens.listAccessibleRepositories).toHaveBeenCalledWith(
+      7,
+    );
+    expect(prisma.repository.findMany).toHaveBeenCalledWith({
+      where: {
+        ownerId: 7,
+        githubRepoId: { in: ['11'] },
+      },
+      orderBy: { fullName: 'asc' },
     });
   });
 });

@@ -5,11 +5,18 @@ import { PrismaModule } from '../prisma/prisma.module';
 import { ConfigModule } from '@nestjs/config';
 import { AuthModule } from '../auth/auth.module';
 import { AnalysisModule } from '../analysis/analysis.module';
+import { GithubAppModule } from '../github-app/github-app.module';
 
 import { CollectionController } from './collection.controller';
 
 @Module({
-  imports: [PrismaModule, ConfigModule, AuthModule, AnalysisModule],
+  imports: [
+    PrismaModule,
+    ConfigModule,
+    AuthModule,
+    AnalysisModule,
+    GithubAppModule,
+  ],
   providers: [CollectionService, GithubProvider],
   controllers: [CollectionController],
   exports: [CollectionService],

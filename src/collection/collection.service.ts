@@ -11,16 +11,19 @@ import {
   RepositoryQueryResponse,
   EstimateResponseDto,
 } from './types/github-api.types';
-import { EncryptionService } from '../auth/encryption.service';
 import { AnalysisService } from '../analysis/analysis.service';
+import { GithubAppService } from '../github-app/github-app.service';
+import { GithubInstallationTokenService } from '../github-app/github-installation-token.service';
+import { Repository } from '@prisma/client';
 
 @Injectable()
 export class CollectionService implements ICollectionService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly githubProvider: GithubProvider,
-    private readonly encryptionService: EncryptionService,
     private readonly analysisService: AnalysisService,
+    private readonly githubAppService: GithubAppService,
+    private readonly installationTokens: GithubInstallationTokenService,
   ) {}
 
   async syncRepository(
@@ -38,24 +41,26 @@ export class CollectionService implements ICollectionService {
       );
     }
 
-    if (repository.ownerId !== userId || !repository.owner.githubToken) {
+    if (repository.ownerId !== userId) {
       throw new ForbiddenException(
-        `You do not have permission to sync this repository or token is missing`,
+        'You do not have permission to sync this repository',
       );
     }
 
-    // Decrypt the token
-    const token = this.encryptionService.decrypt(repository.owner.githubToken);
-
     const [owner, repoName] = repository.fullName.split('/');
 
-    // Fetch data from GitHub using user's token
-    const githubData = (await this.githubProvider.fetchPullRequests(
-      owner,
-      repoName,
-      token,
-      repository.lastSyncTime || undefined,
-    )) as RepositoryQueryResponse;
+    const githubData =
+      await this.installationTokens.executeForRepository<RepositoryQueryResponse>(
+        userId,
+        githubRepoId,
+        (octokit) =>
+          this.githubProvider.fetchPullRequests(
+            owner,
+            repoName,
+            octokit,
+            repository.lastSyncTime ?? undefined,
+          ) as Promise<RepositoryQueryResponse>,
+      );
 
     // Transform data
     const collectedData: CollectedDataDto = {
@@ -115,21 +120,26 @@ export class CollectionService implements ICollectionService {
       );
     }
 
-    if (repository.ownerId !== userId || !repository.owner.githubToken) {
+    if (repository.ownerId !== userId) {
       throw new ForbiddenException(
-        `You do not have permission to access this repository or token is missing`,
+        'You do not have permission to access this repository',
       );
     }
 
-    const token = this.encryptionService.decrypt(repository.owner.githubToken);
     const [owner, repoName] = repository.fullName.split('/');
 
-    const githubData = (await this.githubProvider.fetchPullRequests(
-      owner,
-      repoName,
-      token,
-      repository.lastSyncTime || undefined,
-    )) as RepositoryQueryResponse;
+    const githubData =
+      await this.installationTokens.executeForRepository<RepositoryQueryResponse>(
+        userId,
+        githubRepoId,
+        (octokit) =>
+          this.githubProvider.fetchPullRequests(
+            owner,
+            repoName,
+            octokit,
+            repository.lastSyncTime ?? undefined,
+          ) as Promise<RepositoryQueryResponse>,
+      );
 
     const rawPrCount = githubData.repository.pullRequests.nodes.length;
     if (rawPrCount === 0) {
@@ -167,31 +177,30 @@ export class CollectionService implements ICollectionService {
     return { prCount, estimatedTokens };
   }
 
-  async getRepositories(userId: number): Promise<any[]> {
-    const user = await (this.prisma as any).user.findUnique({
+  async getRepositories(userId: number): Promise<Repository[]> {
+    const user = await this.prisma.user.findUnique({
       where: { id: userId },
+      select: { id: true },
     });
 
-    if (!user || !user.githubToken) {
-      throw new ForbiddenException('User token missing');
+    if (!user) {
+      throw new ForbiddenException('User not found');
     }
 
-    const token = this.encryptionService.decrypt(user.githubToken);
-    const githubRepos = await this.githubProvider.fetchRepositories(token);
-    console.log(
-      `Fetched ${githubRepos.length} repos from GitHub for user ${userId}`,
-    );
+    await this.githubAppService.getInstallations(userId);
+    const githubRepos =
+      await this.installationTokens.listAccessibleRepositories(userId);
 
-    // Sync GitHub repos with local database
     const upsertPromises = githubRepos.map((repo) =>
-      (this.prisma as any).repository.upsert({
+      this.prisma.repository.upsert({
         where: { githubRepoId: String(repo.id) },
         update: {
-          fullName: repo.full_name,
+          fullName: repo.fullName,
+          ownerId: userId,
         },
         create: {
           githubRepoId: String(repo.id),
-          fullName: repo.full_name,
+          fullName: repo.fullName,
           ownerId: userId,
         },
       }),
@@ -199,12 +208,13 @@ export class CollectionService implements ICollectionService {
 
     await Promise.all(upsertPromises);
 
-    // Return all repositories for this user from DB
-    const dbRepos = await (this.prisma as any).repository.findMany({
-      where: { ownerId: userId },
+    const accessibleRepositoryIds = githubRepos.map(({ id }) => String(id));
+    return this.prisma.repository.findMany({
+      where: {
+        ownerId: userId,
+        githubRepoId: { in: accessibleRepositoryIds },
+      },
       orderBy: { fullName: 'asc' },
     });
-    console.log(`Returning ${dbRepos.length} repos from DB for user ${userId}`);
-    return dbRepos;
   }
 }

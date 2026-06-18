@@ -1,44 +1,27 @@
-import { Test, TestingModule } from '@nestjs/testing';
+import { Octokit } from '@octokit/rest';
 import { GithubProvider } from './github.provider';
 
-// Mock the whole module
-jest.mock('@octokit/rest', () => {
-  return {
-    Octokit: jest.fn().mockImplementation(() => {
-      return {
-        graphql: jest.fn().mockResolvedValue({
-          repository: { pullRequests: { nodes: [] } },
-        }),
-      };
-    }),
-  };
-});
-
 describe('GithubProvider', () => {
-  let provider: GithubProvider;
+  it('uses the supplied installation-authenticated Octokit instance', async () => {
+    const graphql = jest.fn().mockResolvedValue({
+      repository: { pullRequests: { nodes: [] } },
+    });
+    const provider = new GithubProvider();
 
-  beforeEach(async () => {
-    const module: TestingModule = await Test.createTestingModule({
-      providers: [GithubProvider],
-    }).compile();
+    const result = await provider.fetchPullRequests('owner', 'private-repo', {
+      graphql,
+    } as unknown as Octokit);
 
-    provider = module.get<GithubProvider>(GithubProvider);
-  });
-
-  it('should be defined', () => {
-    expect(provider).toBeDefined();
-  });
-
-  describe('fetchPullRequests', () => {
-    it('should call octokit.graphql and return data', async () => {
-      const owner = 'test-owner';
-      const repo = 'test-repo';
-      const token = 'test-token';
-
-      const result = await provider.fetchPullRequests(owner, repo, token);
-
-      expect(result).toBeDefined();
-      expect(result.repository.pullRequests.nodes).toEqual([]);
+    expect(graphql).toHaveBeenCalledWith(
+      expect.stringContaining('pullRequests'),
+      {
+        owner: 'owner',
+        repo: 'private-repo',
+        cursor: undefined,
+      },
+    );
+    expect(result).toEqual({
+      repository: { pullRequests: { nodes: [] } },
     });
   });
 });

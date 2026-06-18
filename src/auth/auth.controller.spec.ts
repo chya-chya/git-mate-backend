@@ -1,0 +1,54 @@
+import type { Request, Response } from 'express';
+import { AuthController } from './auth.controller';
+import { AuthService } from './auth.service';
+
+describe('AuthController', () => {
+  const authService = {
+    validateUser: jest.fn(),
+    login: jest.fn(),
+  };
+
+  const originalFrontendUrl = process.env.FRONTEND_URL;
+  let controller: AuthController;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.FRONTEND_URL = 'http://localhost:3001';
+    controller = new AuthController(authService as unknown as AuthService);
+  });
+
+  afterAll(() => {
+    process.env.FRONTEND_URL = originalFrontendUrl;
+  });
+
+  it('preserves the frontend OAuth callback query contract', async () => {
+    const oauthUser = {
+      githubId: '159997395',
+      username: 'chya-chya',
+      avatarUrl: 'https://avatars.githubusercontent.com/u/159997395',
+      accessToken: 'reduced-scope-oauth-token',
+    };
+    const savedUser = {
+      id: 7,
+      githubId: oauthUser.githubId,
+      username: oauthUser.username,
+    };
+    const redirect = jest.fn();
+    authService.validateUser.mockResolvedValue(savedUser);
+    authService.login.mockResolvedValue({
+      access_token: 'access-token',
+      refresh_token: 'refresh-token',
+    });
+
+    await controller.githubAuthRedirect(
+      { user: oauthUser } as unknown as Request,
+      { redirect } as unknown as Response,
+    );
+
+    expect(authService.validateUser).toHaveBeenCalledWith(oauthUser);
+    expect(authService.login).toHaveBeenCalledWith(savedUser);
+    expect(redirect).toHaveBeenCalledWith(
+      'http://localhost:3001/auth/callback?access_token=access-token&refresh_token=refresh-token&username=chya-chya',
+    );
+  });
+});

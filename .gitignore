@@ -5,3 +5,14 @@ node_modules
 /generated/prisma
 /docs/worklog
 dist
+
+# GitHub App private keys
+certs
+certs/*.pem
+certs/*.private-key
+
+# Local deployment rollback snapshots may contain AWS resource identifiers.
+/deploy/rollback/
+
+# Local production database backups contain sensitive data.
+/backups/
