@@ -168,6 +168,11 @@ export class GithubAppService {
       accountType: installation.accountType,
       status: installation.status,
       repositorySelection: installation.repositorySelection,
+      settingsUrl: this.createSettingsUrl(
+        installation.githubInstallationId,
+        installation.accountLogin,
+        installation.accountType,
+      ),
       membershipVerifiedAt,
     }));
   }
@@ -377,6 +382,18 @@ export class GithubAppService {
       return String(account.id) === githubId;
     }
     return organizationLogins.has(account.login.toLowerCase());
+  }
+
+  private createSettingsUrl(
+    installationId: string,
+    accountLogin: string,
+    accountType: GithubInstallationAccountType,
+  ): string {
+    if (accountType === GithubInstallationAccountType.ORGANIZATION) {
+      return `https://github.com/organizations/${accountLogin}/settings/installations/${installationId}`;
+    }
+
+    return `https://github.com/settings/installations/${installationId}`;
   }
 
   private toInstallationData(installation: GithubInstallationPayload) {

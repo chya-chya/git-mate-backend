@@ -46,6 +46,13 @@ export class GithubInstallationDto {
   @ApiProperty()
   repositorySelection: string;
 
+  @ApiProperty({
+    example:
+      'https://github.com/organizations/octo-org/settings/installations/12345678',
+    description: 'GitHub settings URL for changing selected repositories',
+  })
+  settingsUrl: string;
+
   @ApiProperty()
   membershipVerifiedAt: Date;
 }

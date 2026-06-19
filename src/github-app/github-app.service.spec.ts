@@ -1,5 +1,9 @@
 import { BadRequestException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import {
+  GithubInstallationAccountType,
+  GithubInstallationStatus,
+} from '@prisma/client';
 import { EncryptionService } from '../auth/encryption.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { GithubAppAuthService } from './github-app-auth.service';
@@ -14,6 +18,9 @@ describe('GithubAppService', () => {
     },
     githubInstallation: {
       upsert: jest.fn(),
+    },
+    userGithubInstallation: {
+      findMany: jest.fn(),
     },
     user: {
       findUnique: jest.fn(),
@@ -94,6 +101,62 @@ describe('GithubAppService', () => {
       activeInstallationCount: 0,
       installUrlEndpoint: '/github-app/installations/install-url',
     });
+  });
+
+  it('returns GitHub settings URLs for personal and organization installations', async () => {
+    jest
+      .spyOn(
+        service as unknown as {
+          syncUserInstallations: (userId: number) => void;
+        },
+        'syncUserInstallations',
+      )
+      .mockResolvedValue(undefined);
+    const membershipVerifiedAt = new Date('2026-06-19T03:00:00Z');
+    prisma.userGithubInstallation.findMany.mockResolvedValue([
+      {
+        membershipVerifiedAt,
+        installation: {
+          githubInstallationId: '111',
+          accountLogin: 'chya-chya',
+          accountType: GithubInstallationAccountType.USER,
+          status: GithubInstallationStatus.ACTIVE,
+          repositorySelection: 'selected',
+        },
+      },
+      {
+        membershipVerifiedAt,
+        installation: {
+          githubInstallationId: '222',
+          accountLogin: 'nb02-CODIIT-team2',
+          accountType: GithubInstallationAccountType.ORGANIZATION,
+          status: GithubInstallationStatus.ACTIVE,
+          repositorySelection: 'selected',
+        },
+      },
+    ]);
+
+    await expect(service.getInstallations(7)).resolves.toEqual([
+      {
+        installationId: '111',
+        accountLogin: 'chya-chya',
+        accountType: GithubInstallationAccountType.USER,
+        status: GithubInstallationStatus.ACTIVE,
+        repositorySelection: 'selected',
+        settingsUrl: 'https://github.com/settings/installations/111',
+        membershipVerifiedAt,
+      },
+      {
+        installationId: '222',
+        accountLogin: 'nb02-CODIIT-team2',
+        accountType: GithubInstallationAccountType.ORGANIZATION,
+        status: GithubInstallationStatus.ACTIVE,
+        repositorySelection: 'selected',
+        settingsUrl:
+          'https://github.com/organizations/nb02-CODIIT-team2/settings/installations/222',
+        membershipVerifiedAt,
+      },
+    ]);
   });
 
   it('rejects a consumed installation state', async () => {
