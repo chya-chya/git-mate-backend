@@ -24,7 +24,7 @@ async function bootstrap() {
 
   // Enable CORS
   app.enableCors({
-    origin: process.env.FRONTEND_URL ?? 'http://localhost:3005',
+    origin: process.env.FRONTEND_URL ?? 'https://git-mate-frontend.vercel.app',
     credentials: true,
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
     allowedHeaders: [
