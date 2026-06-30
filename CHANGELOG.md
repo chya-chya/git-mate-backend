@@ -2,6 +2,19 @@
 
 ---
 
+## [Unreleased] - 2026-06-30
+
+### PART 1. Conventional Commits 규격 정형화 분석 (`automation`)
+
+- **feat(github-app)**: 기존 GitHub OAuth 토큰 중심 접근을 GitHub App 설치 기반 접근으로 전환하고, 설치 URL 생성/콜백 처리/웹훅 검증/설치 토큰 발급/접근 가능한 저장소 동기화 흐름을 추가 (`3bf0a5f`)
+- **feat(auth)**: 계정 비활성화 상태를 도입하고, GitHub OAuth 재인가 상태값 검증 및 사용자 토큰 갱신 흐름을 보강 (`953f3e0`)
+- **feat(github-app)**: 사용자별 GitHub App 설치 설정 URL을 응답에 포함하여 개인/조직 설치 관리 화면으로 바로 이동할 수 있도록 개선 (`996e8bf`)
+- **fix(auth)**: 인증된 사용자가 별도 엔드포인트로 GitHub 재인가 URL을 생성할 수 있도록 하고, 브라우저 기반 재인가 fallback 흐름의 호환성을 개선 (`a4ca0de`, `9dc7f8a`)
+- **fix(main)**: 프로덕션 프론트엔드 도메인을 CORS 허용 origin으로 반영하여 배포 환경의 브라우저 요청 실패를 방지 (`b9e1712`)
+- **docs(project)**: AI 코더 작업 기준을 `AGENTS.md`에 추가하고, 분석 아키텍처 문서 및 LLM 프롬프트 트러블슈팅 문서 위치를 정리 (`6f7a106`)
+
+---
+
 ## [v1.3.0] - 2026-06-08 (최신)
 
 ### PART 1. Conventional Commits 규격 정형화 분석 (`automation`)
