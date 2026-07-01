@@ -1,12 +1,12 @@
 import { ForbiddenException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { Octokit } from '@octokit/rest';
-import { AnalysisService } from '../analysis/analysis.service';
-import { GithubAppService } from '../github-app/github-app.service';
-import { GithubInstallationTokenService } from '../github-app/github-installation-token.service';
-import { PrismaService } from '../prisma/prisma.service';
-import { CollectionService } from './collection.service';
-import { GithubProvider } from './github.provider';
+import { AnalysisService } from '../../analysis/analysis.service';
+import { GithubAppService } from '../../github-app/github-app.service';
+import { GithubInstallationTokenService } from '../../github-app/github-installation-token.service';
+import { PrismaService } from '../../prisma/prisma.service';
+import { CollectionService } from '.././collection.service';
+import { GithubProvider } from '.././github.provider';
 
 describe('CollectionService', () => {
   let service: CollectionService;
@@ -30,7 +30,7 @@ describe('CollectionService', () => {
   };
   const installationTokens = {
     executeForRepository: jest.fn(),
-    listAccessibleRepositories: jest.fn(),
+    getAvailableRepos: jest.fn(),
   };
   const githubAppService = {
     getInstallations: jest.fn(),
@@ -210,7 +210,7 @@ describe('CollectionService', () => {
   it('returns only repositories exposed by installations', async () => {
     prisma.user.findUnique.mockResolvedValue({ id: 7 });
     githubAppService.getInstallations.mockResolvedValue([]);
-    installationTokens.listAccessibleRepositories.mockResolvedValue([
+    installationTokens.getAvailableRepos.mockResolvedValue([
       {
         id: 11,
         fullName: 'owner/private-repo',
@@ -231,9 +231,7 @@ describe('CollectionService', () => {
     await service.getRepositories(7);
 
     expect(githubAppService.getInstallations).toHaveBeenCalledWith(7);
-    expect(installationTokens.listAccessibleRepositories).toHaveBeenCalledWith(
-      7,
-    );
+    expect(installationTokens.getAvailableRepos).toHaveBeenCalledWith(7);
     expect(prisma.repository.findMany).toHaveBeenCalledWith({
       where: {
         ownerId: 7,

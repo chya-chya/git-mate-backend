@@ -1,8 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import {
-  CollectedDataDto,
-  PullRequestDto,
-} from '../collection/types/github-api.types';
+import { CollectedDataDto } from '../collection/types/github-api.types';
 
 @Injectable()
 export class RefinerService {

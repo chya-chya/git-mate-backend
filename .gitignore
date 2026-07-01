@@ -16,3 +16,6 @@ certs/*.private-key
 
 # Local production database backups contain sensitive data.
 /backups/
+
+# Local deployment documentation
+/docs/deployment/

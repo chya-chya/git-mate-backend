@@ -59,7 +59,7 @@ export class AnalysisService {
       // 2. Preprocess Data
       const preprocessedData = this.preprocessor.preprocess(refinedData);
 
-      // 3. LLM Analysis with CAG Parallelism
+      // 3. LLM Analysis
       const llmResponse = await this.llmProvider.analyze(preprocessedData);
       const { result: llmResult, usage } = llmResponse;
 

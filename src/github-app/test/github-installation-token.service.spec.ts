@@ -1,7 +1,7 @@
 import { ForbiddenException } from '@nestjs/common';
-import { PrismaService } from '../prisma/prisma.service';
-import { GithubAppAuthService } from './github-app-auth.service';
-import { GithubInstallationTokenService } from './github-installation-token.service';
+import { PrismaService } from '../../prisma/prisma.service';
+import { GithubAppAuthService } from '.././github-app-auth.service';
+import { GithubInstallationTokenService } from '.././github-installation-token.service';
 
 const mockListReposAccessibleToInstallation = jest.fn();
 
@@ -49,7 +49,7 @@ describe('GithubInstallationTokenService', () => {
   it('returns an actionable error when no GitHub App is installed', async () => {
     prisma.userGithubInstallation.findMany.mockResolvedValue([]);
 
-    await expect(service.listAccessibleRepositories(7)).rejects.toMatchObject({
+    await expect(service.getAvailableRepos(7)).rejects.toMatchObject({
       response: {
         code: 'GITHUB_APP_INSTALLATION_REQUIRED',
         message: 'Install or reconnect the GitHub App to access repositories',
@@ -81,7 +81,7 @@ describe('GithubInstallationTokenService', () => {
       },
     });
 
-    await expect(service.listAccessibleRepositories(7)).resolves.toEqual([
+    await expect(service.getAvailableRepos(7)).resolves.toEqual([
       {
         id: 11,
         fullName: 'owner/private-repo',
@@ -117,8 +117,8 @@ describe('GithubInstallationTokenService', () => {
       data: { repositories: [] },
     });
 
-    await service.listAccessibleRepositories(7);
-    await service.listAccessibleRepositories(7);
+    await service.getAvailableRepos(7);
+    await service.getAvailableRepos(7);
 
     expect(createInstallationAccessToken).toHaveBeenCalledTimes(1);
   });
@@ -145,8 +145,8 @@ describe('GithubInstallationTokenService', () => {
       data: { repositories: [] },
     });
 
-    await service.listAccessibleRepositories(7);
-    await service.listAccessibleRepositories(7);
+    await service.getAvailableRepos(7);
+    await service.getAvailableRepos(7);
 
     expect(createInstallationAccessToken).toHaveBeenCalledTimes(2);
   });
@@ -177,7 +177,7 @@ describe('GithubInstallationTokenService', () => {
     ]);
     prisma.githubInstallation.findFirst.mockResolvedValue(null);
 
-    await expect(service.listAccessibleRepositories(7)).rejects.toBeInstanceOf(
+    await expect(service.getAvailableRepos(7)).rejects.toBeInstanceOf(
       ForbiddenException,
     );
     expect(createInstallationAccessToken).not.toHaveBeenCalled();
@@ -246,7 +246,7 @@ describe('GithubInstallationTokenService', () => {
       .mockRejectedValueOnce({ status: 401 })
       .mockResolvedValueOnce({ data: { repositories: [] } });
 
-    await expect(service.listAccessibleRepositories(7)).resolves.toEqual([]);
+    await expect(service.getAvailableRepos(7)).resolves.toEqual([]);
     expect(mockListReposAccessibleToInstallation).toHaveBeenCalledTimes(2);
     expect(createInstallationAccessToken).toHaveBeenCalledTimes(2);
   });

@@ -1,5 +1,5 @@
 import { ConfigService } from '@nestjs/config';
-import { GithubAppConfig } from './github-app.config';
+import { GithubAppConfig } from '.././github-app.config';
 
 describe('GithubAppConfig', () => {
   it('fails fast when required GitHub App configuration is missing', () => {

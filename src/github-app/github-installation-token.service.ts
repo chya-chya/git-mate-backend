@@ -30,10 +30,8 @@ export class GithubInstallationTokenService {
     private readonly githubAppAuth: GithubAppAuthService,
   ) {}
 
-  async listAccessibleRepositories(
-    userId: number,
-  ): Promise<InstallationRepository[]> {
-    const installations = await this.getActiveInstallations(userId);
+  async getAvailableRepos(userId: number): Promise<InstallationRepository[]> {
+    const installations = await this.getActiveRepoInstallations(userId);
     const repositories = await Promise.all(
       installations.map(async ({ githubInstallationId }) => {
         const installationRepositories: InstallationRepository[] = [];
@@ -78,7 +76,7 @@ export class GithubInstallationTokenService {
     githubRepoId: string,
     operation: (octokit: Octokit) => Promise<T>,
   ): Promise<T> {
-    const repository = (await this.listAccessibleRepositories(userId)).find(
+    const repository = (await this.getAvailableRepos(userId)).find(
       ({ id }) => String(id) === githubRepoId,
     );
     if (!repository) {
@@ -148,7 +146,7 @@ export class GithubInstallationTokenService {
     return data.token;
   }
 
-  private async getActiveInstallations(userId: number) {
+  private async getActiveRepoInstallations(userId: number) {
     const links = await this.prisma.userGithubInstallation.findMany({
       where: {
         userId,
