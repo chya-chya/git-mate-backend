@@ -11,7 +11,15 @@ import {
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
+import type { Request } from 'express';
 import { AnalysisService } from './analysis.service';
+
+interface AuthenticatedRequest extends Request {
+  user: {
+    id: number;
+    username: string;
+  };
+}
 
 @ApiTags('Analysis')
 @ApiBearerAuth()
@@ -22,14 +30,17 @@ export class AnalysisController {
 
   @Get('stats')
   @ApiOperation({ summary: '현재 사용자의 통합 역량 통계 조회' })
-  async getStats(@Req() req: any) {
+  async getStats(@Req() req: AuthenticatedRequest) {
     const userId = req.user.id;
     return this.analysisService.getUserStats(userId);
   }
 
   @Get('reports')
   @ApiOperation({ summary: '사용자의 모든 분석 리포트 목록 조회' })
-  async getReports(@Req() req: any, @Query('shared') shared?: string) {
+  async getReports(
+    @Req() req: AuthenticatedRequest,
+    @Query('shared') shared?: string,
+  ) {
     const userId = req.user.id;
     const isShared =
       shared === 'true' ? true : shared === 'false' ? false : undefined;
@@ -38,7 +49,7 @@ export class AnalysisController {
 
   @Get('reports/:id')
   @ApiOperation({ summary: '특정 분석 리포트 상세 조회' })
-  async getReport(@Param('id') id: string, @Req() req: any) {
+  async getReport(@Param('id') id: string, @Req() req: AuthenticatedRequest) {
     const userId = req.user.id;
     const report = await this.analysisService.getReportById(Number(id), userId);
     if (!report) {
@@ -49,7 +60,7 @@ export class AnalysisController {
 
   @Get('status/:id')
   @ApiOperation({ summary: '분석 상태 및 결과 조회 (호환성용)' })
-  async getStatus(@Param('id') id: string, @Req() req: any) {
+  async getStatus(@Param('id') id: string, @Req() req: AuthenticatedRequest) {
     const userId = req.user.id;
     const report = await this.analysisService.getReportById(Number(id), userId);
 
@@ -68,7 +79,7 @@ export class AnalysisController {
 
   @Get('history')
   @ApiOperation({ summary: '분석된 저장소 목록 및 최신 리포트 조회' })
-  async getHistory(@Req() req: any) {
+  async getHistory(@Req() req: AuthenticatedRequest) {
     const userId = req.user.id;
     return this.analysisService.getAnalyzedRepositories(userId);
   }
@@ -77,7 +88,7 @@ export class AnalysisController {
   @ApiOperation({ summary: '특정 저장소의 분석 히스토리 조회' })
   async getRepoHistory(
     @Param('repositoryId') repositoryId: string,
-    @Req() req: any,
+    @Req() req: AuthenticatedRequest,
   ) {
     const userId = req.user.id;
     return this.analysisService.getReportsByRepository(
@@ -88,7 +99,10 @@ export class AnalysisController {
 
   @Patch('reports/:id/representative')
   @ApiOperation({ summary: '특정 리포트를 대표 분석 결과로 설정' })
-  async setRepresentative(@Param('id') id: string, @Req() req: any) {
+  async setRepresentative(
+    @Param('id') id: string,
+    @Req() req: AuthenticatedRequest,
+  ) {
     const userId = req.user.id;
     return this.analysisService.setRepresentative(userId, Number(id));
   }
@@ -98,7 +112,7 @@ export class AnalysisController {
   async toggleSharing(
     @Param('id') id: string,
     @Body('isShared') isShared: boolean,
-    @Req() req: any,
+    @Req() req: AuthenticatedRequest,
   ) {
     const userId = req.user.id;
     return this.analysisService.toggleSharing(userId, Number(id), isShared);

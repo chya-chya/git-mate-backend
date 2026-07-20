@@ -6,6 +6,7 @@ import { LlmProviderService } from './llm-provider.service';
 import { MetricCalculatorService } from './metric-calculator.service';
 import { StatService } from './stat.service';
 import { CollectedDataDto } from '../collection/types/github-api.types';
+import { Prisma } from '@prisma/client';
 
 @Injectable()
 export class AnalysisService {
@@ -21,7 +22,7 @@ export class AnalysisService {
   ) {}
 
   /**
-   * Run the full analysis pipeline for a specific user and repository
+   * 특정 사용자와 저장소에 대한 전체 분석 파이프라인 실행
    */
   async runAnalysis(
     userId: number,
@@ -32,7 +33,7 @@ export class AnalysisService {
       `Starting analysis for User ${userId}, Repo ${repositoryId}...`,
     );
 
-    // 0. Check User Token Balance
+    // 0. 사용자 토큰 잔액 확인
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: { availableTokens: true },
@@ -49,38 +50,38 @@ export class AnalysisService {
     }
 
     try {
-      // 1. Refine Data
+      // 1. 데이터 정제
       const refinedData = this.refiner.refine(data);
       if (refinedData.pullRequests.length === 0) {
         this.logger.warn('No meaningful data to analyze after refinement.');
         return;
       }
 
-      // 2. Preprocess Data
+      // 2. 데이터 전처리
       const preprocessedData = this.preprocessor.preprocess(refinedData);
 
-      // 3. LLM Analysis
+      // 3. LLM 분석
       const llmResponse = await this.llmProvider.analyze(preprocessedData);
       const { result: llmResult, usage } = llmResponse;
 
-      // 4. Calculate Final Metrics
+      // 4. 최종 지표 계산
       const metrics = this.calculator.calculate(llmResult);
 
-      // 5. Save Report, Update Stats, and Deduct Tokens in a Transaction
-      await (this.prisma as any).$transaction(async (tx) => {
-        // A. Save Report
+      // 5. 트랜잭션 내에서 리포트 저장, 통계 업데이트 및 토큰 차감 진행
+      await this.prisma.$transaction(async (tx) => {
+        // A. 리포트 저장
         await tx.analysisReport.create({
           data: {
             userId,
             repositoryId,
-            metrics: llmResult as any,
+            metrics: llmResult as unknown as Prisma.InputJsonValue,
           },
         });
 
-        // B. Update User Stats
+        // B. 사용자 통계 업데이트
         await this.statService.updateStats(userId, metrics);
 
-        // C. Deduct Tokens
+        // C. 토큰 차감
         await tx.user.update({
           where: { id: userId },
           data: {
@@ -104,11 +105,12 @@ export class AnalysisService {
   }
 
   /**
-   * Pre-calculate the exact tokens required for the data analysis.
+   * 데이터 분석에 필요한 정확한 토큰 수 사전 계산
    */
-  async estimateTokens(
-    data: CollectedDataDto,
-  ): Promise<{ prCount: number; estimatedTokens: number }> {
+  estimateTokens(data: CollectedDataDto): {
+    prCount: number;
+    estimatedTokens: number;
+  } {
     const refinedData = this.refiner.refine(data);
     const prCount = refinedData.pullRequests.length;
     if (prCount === 0) {
@@ -121,24 +123,24 @@ export class AnalysisService {
   }
 
   /**
-   * Get aggregate stats for a user
+   * 사용자의 통합 통계 조회
    */
   async getUserStats(userId: number) {
-    return (this.prisma as any).userStat.findUnique({
+    return this.prisma.userStat.findUnique({
       where: { userId },
     });
   }
 
   /**
-   * Get all reports for a user, optionally filtered by shared status
+   * 사용자의 모든 리포트 조회 (공유 상태 필터링 옵션 포함)
    */
   async getReports(userId: number, isShared?: boolean) {
-    const whereClause: any = { userId };
+    const whereClause: Prisma.AnalysisReportWhereInput = { userId };
     if (isShared !== undefined) {
       whereClause.isShared = isShared;
     }
 
-    return (this.prisma as any).analysisReport.findMany({
+    return this.prisma.analysisReport.findMany({
       where: whereClause,
       include: { repository: true },
       orderBy: { syncTime: 'desc' },
@@ -146,10 +148,10 @@ export class AnalysisService {
   }
 
   /**
-   * Get all reports for a specific repository
+   * 특정 저장소의 모든 리포트 조회
    */
   async getReportsByRepository(userId: number, repositoryId: number) {
-    return await (this.prisma as any).analysisReport.findMany({
+    return await this.prisma.analysisReport.findMany({
       where: { userId, repositoryId },
       include: { repository: true },
       orderBy: { syncTime: 'desc' },
@@ -157,20 +159,20 @@ export class AnalysisService {
   }
 
   /**
-   * Get a specific report by ID, verifying ownership
+   * ID로 특정 리포트 조회 (소유권 검증 포함)
    */
   async getReportById(id: number, userId: number) {
-    return await (this.prisma as any).analysisReport.findFirst({
+    return await this.prisma.analysisReport.findFirst({
       where: { id, userId },
       include: { repository: true },
     });
   }
 
   /**
-   * Get list of repositories that have at least one analysis report, with the latest report
+   * 최소 하나 이상의 분석 리포트가 있는 저장소 목록 및 최신 리포트 조회
    */
   async getAnalyzedRepositories(userId: number) {
-    // 1. Get unique repository IDs that have reports for this user
+    // 1. 이 사용자의 리포트가 존재하는 고유한 저장소 ID 목록 조회
     const reports = await this.prisma.analysisReport.findMany({
       where: { userId },
       select: { repositoryId: true },
@@ -179,11 +181,11 @@ export class AnalysisService {
 
     if (reports.length === 0) return [];
 
-    // 2. For each repository, get the latest report
+    // 2. 각 저장소별 최신 리포트 조회
     const summaries = await Promise.all(
-      reports.map(async (r: any) => {
+      reports.map(async (report) => {
         const latestReport = await this.prisma.analysisReport.findFirst({
-          where: { userId, repositoryId: r.repositoryId },
+          where: { userId, repositoryId: report.repositoryId },
           include: { repository: true },
           orderBy: { syncTime: 'desc' },
         });
@@ -195,10 +197,10 @@ export class AnalysisService {
   }
 
   /**
-   * Set a specific report as the representative one for the user
+   * 특정 리포트를 사용자의 대표 분석 결과로 설정
    */
   async setRepresentative(userId: number, reportId: number) {
-    // Verify report ownership
+    // 리포트 소유권 검증
     const report = await this.prisma.analysisReport.findFirst({
       where: { id: reportId, userId },
     });
@@ -215,10 +217,10 @@ export class AnalysisService {
   }
 
   /**
-   * Toggle sharing status of a specific report
+   * 특정 리포트의 공유 상태 토글
    */
   async toggleSharing(userId: number, reportId: number, isShared: boolean) {
-    // Verify report ownership
+    // 리포트 소유권 검증
     const report = await this.prisma.analysisReport.findFirst({
       where: { id: reportId, userId },
     });
@@ -235,7 +237,7 @@ export class AnalysisService {
   }
 
   /**
-   * Get public representative report by username
+   * 사용자 이름으로 공개 대표 리포트 조회
    */
   async getPublicReport(username: string) {
     const user = await this.prisma.user.findFirst({
@@ -259,7 +261,7 @@ export class AnalysisService {
   }
 
   /**
-   * Get all shared representative reports across the platform
+   * 플랫폼 전체의 모든 공유된 대표 리포트 조회
    */
   async getAllPublicReports() {
     return await this.prisma.user.findMany({
