@@ -5,6 +5,7 @@ node_modules
 /generated/prisma
 /docs/worklog
 dist
+coverage/
 
 # GitHub App private keys
 certs
