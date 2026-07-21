@@ -1,5 +1,5 @@
 import { Octokit } from '@octokit/rest';
-import { GithubProvider } from '.././github.provider';
+import { GithubProvider } from '../github.provider';
 
 describe('GithubProvider', () => {
   it('uses the supplied installation-authenticated Octokit instance', async () => {

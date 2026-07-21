@@ -1,7 +1,7 @@
 import { NotFoundException } from '@nestjs/common';
 import { UserStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
-import { UserService } from '.././user.service';
+import { UserService } from '../user.service';
 
 describe('UserService', () => {
   const prisma = {

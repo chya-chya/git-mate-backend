@@ -1,7 +1,7 @@
 import { ForbiddenException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
-import { GithubAppAuthService } from '.././github-app-auth.service';
-import { GithubInstallationTokenService } from '.././github-installation-token.service';
+import { GithubAppAuthService } from '../github-app-auth.service';
+import { GithubInstallationTokenService } from '../github-installation-token.service';
 
 const mockListReposAccessibleToInstallation = jest.fn();
 

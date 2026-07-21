@@ -2,8 +2,8 @@ import { JwtService } from '@nestjs/jwt';
 import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import { UserStatus } from '@prisma/client';
 import { ConfigService } from '@nestjs/config';
-import { EncryptionService } from '.././encryption.service';
-import { AuthService } from '.././auth.service';
+import { EncryptionService } from '../encryption.service';
+import { AuthService } from '../auth.service';
 import { PrismaService } from '../../prisma/prisma.service';
 
 describe('AuthService', () => {

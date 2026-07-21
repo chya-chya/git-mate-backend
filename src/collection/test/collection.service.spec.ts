@@ -5,8 +5,8 @@ import { AnalysisService } from '../../analysis/analysis.service';
 import { GithubAppService } from '../../github-app/github-app.service';
 import { GithubInstallationTokenService } from '../../github-app/github-installation-token.service';
 import { PrismaService } from '../../prisma/prisma.service';
-import { CollectionService } from '.././collection.service';
-import { GithubProvider } from '.././github.provider';
+import { CollectionService } from '../collection.service';
+import { GithubProvider } from '../github.provider';
 
 describe('CollectionService', () => {
   let service: CollectionService;

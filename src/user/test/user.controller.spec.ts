@@ -1,7 +1,7 @@
 import type { Request } from 'express';
 import { UserStatus } from '@prisma/client';
-import { UserController } from '.././user.controller';
-import { UserService } from '.././user.service';
+import { UserController } from '../user.controller';
+import { UserService } from '../user.service';
 
 describe('UserController', () => {
   const userService = {

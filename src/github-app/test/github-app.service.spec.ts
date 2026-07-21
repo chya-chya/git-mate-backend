@@ -6,9 +6,9 @@ import {
 } from '@prisma/client';
 import { EncryptionService } from '../../auth/encryption.service';
 import { PrismaService } from '../../prisma/prisma.service';
-import { GithubAppAuthService } from '.././github-app-auth.service';
-import { GithubAppConfig } from '.././github-app.config';
-import { GithubAppService } from '.././github-app.service';
+import { GithubAppAuthService } from '../github-app-auth.service';
+import { GithubAppConfig } from '../github-app.config';
+import { GithubAppService } from '../github-app.service';
 
 describe('GithubAppService', () => {
   const prisma = {

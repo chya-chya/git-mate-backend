@@ -7,8 +7,9 @@ node_modules
 dist
 coverage/
 
-# GitHub App private keys
-certs
+# Only the public database CA is allowed in this directory.
+certs/*
+!certs/supabase-ca.crt
 certs/*.pem
 certs/*.private-key
 
