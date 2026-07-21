@@ -1,8 +1,8 @@
 import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { UserStatus } from '@prisma/client';
-import { PrismaService } from '../../prisma/prisma.service';
-import { JwtStrategy } from './jwt.strategy';
+import { PrismaService } from '../../../prisma/prisma.service';
+import { JwtStrategy } from '../../strategies/jwt.strategy';
 
 describe('JwtStrategy', () => {
   const configService = {

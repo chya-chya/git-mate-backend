@@ -1,4 +1,4 @@
-import { GITHUB_OAUTH_SCOPES } from './github.strategy';
+import { GITHUB_OAUTH_SCOPES } from '../../strategies/github.strategy';
 
 describe('GithubStrategy OAuth scopes', () => {
   it('uses identity and organization scopes without repository access', () => {

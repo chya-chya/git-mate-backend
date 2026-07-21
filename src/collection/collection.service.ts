@@ -105,7 +105,7 @@ export class CollectionService implements ICollectionService {
     return collectedData;
   }
 
-  async estimateSync(
+  async estimateCost(
     githubRepoId: string,
     userId: number,
   ): Promise<EstimateResponseDto> {
@@ -188,8 +188,7 @@ export class CollectionService implements ICollectionService {
     }
 
     await this.githubAppService.getInstallations(userId);
-    const githubRepos =
-      await this.installationTokens.listAccessibleRepositories(userId);
+    const githubRepos = await this.installationTokens.getAvailableRepos(userId);
 
     const upsertPromises = githubRepos.map((repo) =>
       this.prisma.repository.upsert({

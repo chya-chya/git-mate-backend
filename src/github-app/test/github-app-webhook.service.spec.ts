@@ -1,8 +1,8 @@
 import { UnauthorizedException } from '@nestjs/common';
 import { createHmac } from 'node:crypto';
-import { PrismaService } from '../prisma/prisma.service';
-import { GithubAppConfig } from './github-app.config';
-import { GithubAppWebhookService } from './github-app-webhook.service';
+import { PrismaService } from '../../prisma/prisma.service';
+import { GithubAppConfig } from '../github-app.config';
+import { GithubAppWebhookService } from '../github-app-webhook.service';
 
 describe('GithubAppWebhookService', () => {
   const prisma = {

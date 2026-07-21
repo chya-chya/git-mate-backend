@@ -11,6 +11,12 @@ import {
   CollectedDataDto,
   EstimateResponseDto,
 } from './types/github-api.types';
+import type { Repository } from '@prisma/client';
+import type { Request } from 'express';
+
+interface AuthenticatedRequest extends Request {
+  user: { id: number };
+}
 
 @ApiTags('Collection')
 @ApiBearerAuth()
@@ -20,33 +26,46 @@ export class CollectionController {
 
   @Post('sync/:githubRepoId')
   @UseGuards(AuthGuard('jwt'))
-  @ApiOperation({ summary: 'Sync GitHub Repository PRs' })
+  @ApiOperation({ summary: 'GitHub 저장소 PR 동기화' })
   @ApiResponse({ status: 200, type: CollectedDataDto })
   async sync(
     @Param('githubRepoId') githubRepoId: string,
-    @Req() req: any,
+    @Req() req: AuthenticatedRequest,
   ): Promise<CollectedDataDto> {
-    const user = req.user as { id: number };
-    return this.collectionService.syncRepository(githubRepoId, user.id);
+    return this.collectionService.syncRepository(githubRepoId, req.user.id);
+  }
+
+  @Get('estimate-cost/:githubRepoId')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiOperation({ summary: '동기화 전 예상 비용(PR 및 토큰 수) 추정' })
+  @ApiResponse({ status: 200, type: EstimateResponseDto })
+  async estimateCost(
+    @Param('githubRepoId') githubRepoId: string,
+    @Req() req: AuthenticatedRequest,
+  ): Promise<EstimateResponseDto> {
+    return this.collectionService.estimateCost(githubRepoId, req.user.id);
   }
 
   @Get('estimate/:githubRepoId')
   @UseGuards(AuthGuard('jwt'))
-  @ApiOperation({ summary: 'Estimate PR count and tokens without syncing' })
+  @ApiOperation({
+    summary: '동기화 전 예상 비용(PR 및 토큰 수) 추정 (기존 경로)',
+    deprecated: true,
+  })
   @ApiResponse({ status: 200, type: EstimateResponseDto })
   async estimate(
     @Param('githubRepoId') githubRepoId: string,
-    @Req() req: any,
+    @Req() req: AuthenticatedRequest,
   ): Promise<EstimateResponseDto> {
-    const user = req.user as { id: number };
-    return this.collectionService.estimateSync(githubRepoId, user.id);
+    return this.collectionService.estimateCost(githubRepoId, req.user.id);
   }
 
   @Get('repos')
   @UseGuards(AuthGuard('jwt'))
-  @ApiOperation({ summary: 'Get all user repositories from GitHub and sync' })
-  async getRepositories(@Req() req: any): Promise<any[]> {
-    const user = req.user as { id: number };
-    return this.collectionService.getRepositories(user.id);
+  @ApiOperation({ summary: 'GitHub 사용자 저장소 목록 조회 및 동기화' })
+  async getRepositories(
+    @Req() req: AuthenticatedRequest,
+  ): Promise<Repository[]> {
+    return this.collectionService.getRepositories(req.user.id);
   }
 }

@@ -2,7 +2,7 @@ import { ExecutionContext } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import type { Request } from 'express';
-import { GithubOAuthGuard } from './github-oauth.guard';
+import { GithubOAuthGuard } from '../../guards/github-oauth.guard';
 
 describe('GithubOAuthGuard', () => {
   const jwtService = {

@@ -2,8 +2,8 @@ import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import type { App } from 'supertest/types';
-import { GithubAppWebhookController } from './github-app-webhook.controller';
-import { GithubAppWebhookService } from './github-app-webhook.service';
+import { GithubAppWebhookController } from '../github-app-webhook.controller';
+import { GithubAppWebhookService } from '../github-app-webhook.service';
 
 describe('GithubAppWebhookController raw body', () => {
   const webhookService = {

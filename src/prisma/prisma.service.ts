@@ -11,6 +11,61 @@ import 'dotenv/config';
 import * as fs from 'fs';
 import * as path from 'path';
 
+const DATABASE_TLS_QUERY_PARAMETERS = [
+  'ssl',
+  'sslmode',
+  'sslcert',
+  'sslkey',
+  'sslrootcert',
+  'uselibpqcompat',
+];
+
+export function removeDatabaseTlsQueryParameters(
+  connectionString: string,
+): string {
+  const connectionUrl = new URL(connectionString);
+
+  for (const parameter of DATABASE_TLS_QUERY_PARAMETERS) {
+    connectionUrl.searchParams.delete(parameter);
+  }
+
+  return connectionUrl.toString();
+}
+
+export function getEffectiveDatabaseHost(connectionString: string): string {
+  const connectionUrl = new URL(connectionString);
+  const queryHosts = connectionUrl.searchParams.getAll('host');
+  const lastQueryHost = queryHosts.at(-1);
+
+  return lastQueryHost || connectionUrl.hostname;
+}
+
+export function createDatabaseSslConfig(
+  databaseHost: string,
+  caCertPath = path.resolve(process.cwd(), 'certs/supabase-ca.crt'),
+): PoolConfig['ssl'] {
+  const isLocal = ['localhost', '127.0.0.1', 'db'].includes(databaseHost);
+
+  if (isLocal) {
+    return false;
+  }
+
+  let caCert: string;
+  try {
+    caCert = fs.readFileSync(caCertPath, 'utf8');
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `SSL CA certificate is required for remote database connections. Failed to read ${caCertPath}: ${reason}`,
+    );
+  }
+
+  return {
+    rejectUnauthorized: true,
+    ca: caCert,
+  };
+}
+
 @Injectable()
 export class PrismaService
   extends PrismaClient
@@ -20,55 +75,20 @@ export class PrismaService
 
   constructor() {
     const connectionString = process.env.DATABASE_URL;
-    const maskedString = connectionString
-      ? connectionString
-          .replace(/:([^:@/]+)@/g, ':******@')
-          .replace(/api_key=[^&]+/g, 'api_key=******')
-      : 'undefined';
 
-    const isLocal =
-      connectionString?.includes('localhost') ||
-      connectionString?.includes('127.0.0.1') ||
-      connectionString?.includes('db');
+    if (!connectionString) {
+      throw new Error('DATABASE_URL is required');
+    }
+
+    const databaseHost = getEffectiveDatabaseHost(connectionString);
 
     const poolConfig: PoolConfig = {
-      connectionString,
+      connectionString: removeDatabaseTlsQueryParameters(connectionString),
       max: Number(process.env.DB_POOL_SIZE) || 10,
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 5000,
+      ssl: createDatabaseSslConfig(databaseHost),
     };
-
-    if (isLocal) {
-      poolConfig.ssl = false;
-    } else {
-      const caCertPath = path.resolve(process.cwd(), 'certs/supabase-ca.crt');
-      let caCert: string | undefined;
-
-      try {
-        if (fs.existsSync(caCertPath)) {
-          caCert = fs.readFileSync(caCertPath, 'utf8');
-        } else {
-          Logger.warn(
-            `SSL CA file not found at ${caCertPath}. Falling back to unverified SSL (Insecure!).`,
-            PrismaService.name,
-          );
-        }
-      } catch (err) {
-        Logger.error(
-          `Failed to read SSL CA certificate: ${err instanceof Error ? err.message : String(err)}`,
-          PrismaService.name,
-        );
-      }
-
-      poolConfig.ssl = caCert
-        ? {
-            rejectUnauthorized: true,
-            ca: caCert,
-          }
-        : {
-            rejectUnauthorized: false,
-          };
-    }
 
     const pool = new Pool(poolConfig);
     // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
@@ -76,7 +96,7 @@ export class PrismaService
     super({ adapter });
 
     this.logger.log('--- Prisma Connection Debug ---');
-    this.logger.log(`DATABASE_URL: ${maskedString}`);
+    this.logger.log(`Database host: ${databaseHost}`);
   }
 
   async onModuleInit() {
