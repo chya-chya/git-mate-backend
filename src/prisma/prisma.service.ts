@@ -11,11 +11,34 @@ import 'dotenv/config';
 import * as fs from 'fs';
 import * as path from 'path';
 
+const DATABASE_TLS_QUERY_PARAMETERS = [
+  'ssl',
+  'sslmode',
+  'sslcert',
+  'sslkey',
+  'sslrootcert',
+  'uselibpqcompat',
+];
+
+export function removeDatabaseTlsQueryParameters(
+  connectionString: string,
+): string {
+  const connectionUrl = new URL(connectionString);
+
+  for (const parameter of DATABASE_TLS_QUERY_PARAMETERS) {
+    connectionUrl.searchParams.delete(parameter);
+  }
+
+  return connectionUrl.toString();
+}
+
 export function createDatabaseSslConfig(
   connectionString: string,
   caCertPath = path.resolve(process.cwd(), 'certs/supabase-ca.crt'),
 ): PoolConfig['ssl'] {
-  const databaseHost = new URL(connectionString).hostname;
+  const connectionUrl = new URL(connectionString);
+  const databaseHost =
+    connectionUrl.searchParams.get('host') ?? connectionUrl.hostname;
   const isLocal = ['localhost', '127.0.0.1', 'db'].includes(databaseHost);
 
   if (isLocal) {
@@ -47,18 +70,15 @@ export class PrismaService
 
   constructor() {
     const connectionString = process.env.DATABASE_URL;
-    const maskedString = connectionString
-      ? connectionString
-          .replace(/:([^:@/]+)@/g, ':******@')
-          .replace(/api_key=[^&]+/g, 'api_key=******')
-      : 'undefined';
 
     if (!connectionString) {
       throw new Error('DATABASE_URL is required');
     }
 
+    const connectionUrl = new URL(connectionString);
+
     const poolConfig: PoolConfig = {
-      connectionString,
+      connectionString: removeDatabaseTlsQueryParameters(connectionString),
       max: Number(process.env.DB_POOL_SIZE) || 10,
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 5000,
@@ -71,7 +91,7 @@ export class PrismaService
     super({ adapter });
 
     this.logger.log('--- Prisma Connection Debug ---');
-    this.logger.log(`DATABASE_URL: ${maskedString}`);
+    this.logger.log(`Database host: ${connectionUrl.hostname}`);
   }
 
   async onModuleInit() {
