@@ -1,5 +1,6 @@
 import {
   createDatabaseSslConfig,
+  getEffectiveDatabaseHost,
   removeDatabaseTlsQueryParameters,
 } from './prisma.service';
 
@@ -21,16 +22,14 @@ describe('createDatabaseSslConfig', () => {
   it('fails fast when the CA certificate is unavailable for a remote database', () => {
     expect(() =>
       createDatabaseSslConfig(
-        'postgresql://user:password@db.example.com:5432/application',
+        'db.example.com',
         '/path/that/does/not/exist/supabase-ca.crt',
       ),
     ).toThrow('SSL CA certificate is required for remote database connections');
   });
 
   it('uses certificate verification for a remote database', () => {
-    const ssl = createDatabaseSslConfig(
-      'postgresql://user:password@db.example.com:5432/application',
-    );
+    const ssl = createDatabaseSslConfig('db.example.com');
 
     if (!ssl || typeof ssl === 'boolean') {
       throw new Error('Expected a verified TLS configuration');
@@ -40,15 +39,17 @@ describe('createDatabaseSslConfig', () => {
     expect(ssl.ca).toContain('BEGIN CERTIFICATE');
   });
 
-  it('uses the host query parameter when deciding whether TLS is required', () => {
-    const ssl = createDatabaseSslConfig(
-      'postgresql://user:password@localhost:5432/application?host=db.example.com',
+  it('uses pg-compatible last-host precedence when deciding whether TLS is required', () => {
+    const databaseHost = getEffectiveDatabaseHost(
+      'postgresql://user:password@localhost:5432/application?host=db&host=remote.example.com',
     );
+    const ssl = createDatabaseSslConfig(databaseHost);
 
     if (!ssl || typeof ssl === 'boolean') {
       throw new Error('Expected a verified TLS configuration');
     }
 
+    expect(databaseHost).toBe('remote.example.com');
     expect(ssl.rejectUnauthorized).toBe(true);
   });
 });

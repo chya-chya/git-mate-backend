@@ -32,13 +32,18 @@ export function removeDatabaseTlsQueryParameters(
   return connectionUrl.toString();
 }
 
+export function getEffectiveDatabaseHost(connectionString: string): string {
+  const connectionUrl = new URL(connectionString);
+  const queryHosts = connectionUrl.searchParams.getAll('host');
+  const lastQueryHost = queryHosts.at(-1);
+
+  return lastQueryHost || connectionUrl.hostname;
+}
+
 export function createDatabaseSslConfig(
-  connectionString: string,
+  databaseHost: string,
   caCertPath = path.resolve(process.cwd(), 'certs/supabase-ca.crt'),
 ): PoolConfig['ssl'] {
-  const connectionUrl = new URL(connectionString);
-  const databaseHost =
-    connectionUrl.searchParams.get('host') ?? connectionUrl.hostname;
   const isLocal = ['localhost', '127.0.0.1', 'db'].includes(databaseHost);
 
   if (isLocal) {
@@ -75,14 +80,14 @@ export class PrismaService
       throw new Error('DATABASE_URL is required');
     }
 
-    const connectionUrl = new URL(connectionString);
+    const databaseHost = getEffectiveDatabaseHost(connectionString);
 
     const poolConfig: PoolConfig = {
       connectionString: removeDatabaseTlsQueryParameters(connectionString),
       max: Number(process.env.DB_POOL_SIZE) || 10,
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 5000,
-      ssl: createDatabaseSslConfig(connectionString),
+      ssl: createDatabaseSslConfig(databaseHost),
     };
 
     const pool = new Pool(poolConfig);
@@ -91,7 +96,7 @@ export class PrismaService
     super({ adapter });
 
     this.logger.log('--- Prisma Connection Debug ---');
-    this.logger.log(`Database host: ${connectionUrl.hostname}`);
+    this.logger.log(`Database host: ${databaseHost}`);
   }
 
   async onModuleInit() {
