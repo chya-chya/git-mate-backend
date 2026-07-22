@@ -3,6 +3,7 @@ import {
   AnalysisJob,
   AnalysisJobStage,
   AnalysisJobStatus,
+  Prisma,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -37,6 +38,8 @@ export interface AnalysisJobTransitionData {
   startedAt?: Date;
   completedAt?: Date;
 }
+
+export type AnalysisJobDatabase = Pick<Prisma.TransactionClient, 'analysisJob'>;
 
 interface TransitionAnalysisJobRecordBase {
   jobId: string;
@@ -73,16 +76,23 @@ export type TransitionAnalysisJobRecordInput =
 export class AnalysisJobRepository {
   constructor(private readonly prisma: PrismaService) {}
 
-  create(data: CreateAnalysisJobRecordInput): Promise<AnalysisJob> {
-    return this.prisma.analysisJob.create({ data });
+  create(
+    data: CreateAnalysisJobRecordInput,
+    database: AnalysisJobDatabase = this.prisma,
+  ): Promise<AnalysisJob> {
+    return database.analysisJob.create({ data });
   }
 
-  findById(jobId: string): Promise<AnalysisJob | null> {
-    return this.prisma.analysisJob.findUnique({ where: { id: jobId } });
+  findById(
+    jobId: string,
+    database: AnalysisJobDatabase = this.prisma,
+  ): Promise<AnalysisJob | null> {
+    return database.analysisJob.findUnique({ where: { id: jobId } });
   }
 
   async transitionStatus(
     input: TransitionAnalysisJobRecordInput,
+    database: AnalysisJobDatabase = this.prisma,
   ): Promise<boolean> {
     if (
       input.fromStatus === AnalysisJobStatus.RUNNING &&
@@ -98,7 +108,7 @@ export class AnalysisJobRepository {
       throw new Error('A linked report is required for SUCCEEDED job updates');
     }
 
-    const result = await this.prisma.analysisJob.updateMany({
+    const result = await database.analysisJob.updateMany({
       where: {
         id: input.jobId,
         status: input.fromStatus,

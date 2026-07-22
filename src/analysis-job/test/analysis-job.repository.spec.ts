@@ -20,20 +20,25 @@ describe('AnalysisJobRepository', () => {
   });
 
   it('guards success with the expected status, lease, and linked report', async () => {
-    prisma.analysisJob.updateMany.mockResolvedValue({ count: 1 });
+    const transaction = {
+      analysisJob: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+    };
 
     await expect(
-      repository.transitionStatus({
-        jobId: 'job-1',
-        fromStatus: AnalysisJobStatus.RUNNING,
-        toStatus: AnalysisJobStatus.SUCCEEDED,
-        expectedLeaseToken: 'lease-1',
-        requiredReportId: 3,
-        data: { progress: 100 },
-      }),
+      repository.transitionStatus(
+        {
+          jobId: 'job-1',
+          fromStatus: AnalysisJobStatus.RUNNING,
+          toStatus: AnalysisJobStatus.SUCCEEDED,
+          expectedLeaseToken: 'lease-1',
+          requiredReportId: 3,
+          data: { progress: 100 },
+        },
+        transaction as never,
+      ),
     ).resolves.toBe(true);
 
-    expect(prisma.analysisJob.updateMany).toHaveBeenCalledWith({
+    expect(transaction.analysisJob.updateMany).toHaveBeenCalledWith({
       where: {
         id: 'job-1',
         status: AnalysisJobStatus.RUNNING,
@@ -45,6 +50,7 @@ describe('AnalysisJobRepository', () => {
         status: AnalysisJobStatus.SUCCEEDED,
       },
     });
+    expect(prisma.analysisJob.updateMany).not.toHaveBeenCalled();
   });
 
   it('reports a stale transition when no row matches the guard', async () => {

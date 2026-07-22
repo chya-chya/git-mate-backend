@@ -7,8 +7,10 @@ import { PreprocessorService } from './preprocessor.service';
 import { LlmProviderService } from './llm-provider.service';
 import { MetricCalculatorService } from './metric-calculator.service';
 import { StatService } from './stat.service';
+import { AnalysisJobModule } from '../analysis-job/analysis-job.module';
 
 @Module({
+  imports: [AnalysisJobModule],
   controllers: [AnalysisController, PublicAnalysisController],
   providers: [
     AnalysisService,

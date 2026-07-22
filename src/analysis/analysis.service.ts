@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { AnalysisJobStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { RefinerService } from './refiner.service';
 import { PreprocessorService } from './preprocessor.service';
@@ -7,6 +7,13 @@ import { LlmProviderService } from './llm-provider.service';
 import { MetricCalculatorService } from './metric-calculator.service';
 import { StatService } from './stat.service';
 import { CollectedDataDto } from '../collection/types/github-api.types';
+import { AnalysisJobService } from '../analysis-job/analysis-job.service';
+
+export interface AnalysisJobExecutionContext {
+  jobId: string;
+  leaseToken: string;
+  providerRequestIds: string[];
+}
 
 @Injectable()
 export class AnalysisService {
@@ -19,15 +26,33 @@ export class AnalysisService {
     private llmProvider: LlmProviderService,
     private calculator: MetricCalculatorService,
     private statService: StatService,
+    private analysisJobService: AnalysisJobService,
   ) {}
 
   /**
    * Run the full analysis pipeline for a specific user and repository
    */
-  async runAnalysis(
+  runAnalysis(userId: number, repositoryId: number, data: CollectedDataDto) {
+    return this.executeAnalysis(userId, repositoryId, data);
+  }
+
+  /**
+   * Run the worker pipeline and atomically commit its durable job result.
+   */
+  runAnalysisJob(
     userId: number,
     repositoryId: number,
     data: CollectedDataDto,
+    jobContext: AnalysisJobExecutionContext,
+  ) {
+    return this.executeAnalysis(userId, repositoryId, data, jobContext);
+  }
+
+  private async executeAnalysis(
+    userId: number,
+    repositoryId: number,
+    data: CollectedDataDto,
+    jobContext?: AnalysisJobExecutionContext,
   ) {
     this.logger.log(
       `Starting analysis for User ${userId}, Repo ${repositoryId}...`,
@@ -70,11 +95,12 @@ export class AnalysisService {
       // 5. Save Report, Update Stats, and Deduct Tokens in a Transaction
       await this.prisma.$transaction(async (tx) => {
         // A. Save Report
-        await tx.analysisReport.create({
+        const report = await tx.analysisReport.create({
           data: {
             userId,
             repositoryId,
             metrics: llmResult as unknown as Prisma.InputJsonValue,
+            ...(jobContext === undefined ? {} : { jobId: jobContext.jobId }),
           },
         });
 
@@ -90,6 +116,28 @@ export class AnalysisService {
             },
           },
         });
+
+        if (jobContext !== undefined) {
+          const completedAt = new Date();
+          await this.analysisJobService.transition(
+            {
+              jobId: jobContext.jobId,
+              fromStatus: AnalysisJobStatus.RUNNING,
+              toStatus: AnalysisJobStatus.SUCCEEDED,
+              expectedLeaseToken: jobContext.leaseToken,
+              data: {
+                reportId: report.id,
+                completedAt,
+                tokensSettledAt: completedAt,
+                promptTokens: usage.promptTokens,
+                completionTokens: usage.completionTokens,
+                totalTokens: usage.totalTokens,
+                providerRequestIds: jobContext.providerRequestIds,
+              },
+            },
+            tx,
+          );
+        }
 
         this.logger.log(
           `Deducted ${usage.totalTokens} tokens from User ${userId}.`,

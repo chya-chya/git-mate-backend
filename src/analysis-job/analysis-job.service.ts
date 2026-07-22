@@ -6,6 +6,7 @@ import {
   AnalysisJobStatus,
 } from '@prisma/client';
 import {
+  AnalysisJobDatabase,
   AnalysisJobRepository,
   TransitionAnalysisJobRecordInput,
 } from './analysis-job.repository';
@@ -166,7 +167,10 @@ export class AnalysisJobService {
     return this.repository.findById(jobId);
   }
 
-  async transition(input: TransitionAnalysisJobInput): Promise<void> {
+  async transition(
+    input: TransitionAnalysisJobInput,
+    database?: AnalysisJobDatabase,
+  ): Promise<void> {
     if (!canTransitionAnalysisJob(input.fromStatus, input.toStatus)) {
       throw new InvalidAnalysisJobTransitionError(
         input.fromStatus,
@@ -176,7 +180,10 @@ export class AnalysisJobService {
 
     this.validateTransitionInput(input);
     const record = this.toTransitionRecord(input);
-    const transitioned = await this.repository.transitionStatus(record);
+    const transitioned = await this.repository.transitionStatus(
+      record,
+      database,
+    );
 
     if (!transitioned) {
       throw new StaleAnalysisJobTransitionError(input.jobId, input.fromStatus);

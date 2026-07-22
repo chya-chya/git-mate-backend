@@ -1,5 +1,6 @@
 import { AnalysisJobStatus } from '@prisma/client';
 import {
+  AnalysisJobDatabase,
   AnalysisJobRepository,
   TransitionAnalysisJobRecordInput,
 } from '../analysis-job.repository';
@@ -100,30 +101,37 @@ describe('AnalysisJobService', () => {
 
   it('persists a successful terminal transition with its lease and report fences', async () => {
     repository.transitionStatus.mockResolvedValue(true);
+    const database = { analysisJob: {} } as unknown as AnalysisJobDatabase;
 
-    await service.transition({
-      jobId: 'job-1',
-      fromStatus: AnalysisJobStatus.RUNNING,
-      toStatus: AnalysisJobStatus.SUCCEEDED,
-      expectedLeaseToken: 'lease-1',
-      data: { ...settlement, reportId: 3 },
-    });
-
-    expect(repository.transitionStatus).toHaveBeenCalledWith({
-      jobId: 'job-1',
-      fromStatus: AnalysisJobStatus.RUNNING,
-      toStatus: AnalysisJobStatus.SUCCEEDED,
-      expectedLeaseToken: 'lease-1',
-      requiredReportId: 3,
-      data: {
-        stage: null,
-        progress: 100,
-        ...settlement,
-        leaseToken: null,
-        leaseExpiresAt: null,
-        heartbeatAt: null,
+    await service.transition(
+      {
+        jobId: 'job-1',
+        fromStatus: AnalysisJobStatus.RUNNING,
+        toStatus: AnalysisJobStatus.SUCCEEDED,
+        expectedLeaseToken: 'lease-1',
+        data: { ...settlement, reportId: 3 },
       },
-    });
+      database,
+    );
+
+    expect(repository.transitionStatus).toHaveBeenCalledWith(
+      {
+        jobId: 'job-1',
+        fromStatus: AnalysisJobStatus.RUNNING,
+        toStatus: AnalysisJobStatus.SUCCEEDED,
+        expectedLeaseToken: 'lease-1',
+        requiredReportId: 3,
+        data: {
+          stage: null,
+          progress: 100,
+          ...settlement,
+          leaseToken: null,
+          leaseExpiresAt: null,
+          heartbeatAt: null,
+        },
+      },
+      database,
+    );
   });
 
   it('rejects a terminal transition without complete token settlement', async () => {
