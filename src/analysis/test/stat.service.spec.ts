@@ -58,4 +58,21 @@ describe('StatService', () => {
       },
     });
   });
+
+  it('uses the supplied transaction client for the entire stat update', async () => {
+    const transaction = {
+      userStat: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue({}),
+        update: jest.fn(),
+      },
+    };
+
+    await service.updateStats(7, metrics, transaction as never);
+
+    expect(transaction.userStat.findUnique).toHaveBeenCalled();
+    expect(transaction.userStat.create).toHaveBeenCalled();
+    expect(prisma.userStat.findUnique).not.toHaveBeenCalled();
+    expect(prisma.userStat.create).not.toHaveBeenCalled();
+  });
 });

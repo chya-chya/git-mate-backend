@@ -31,7 +31,7 @@ CREATE TABLE "analysis_jobs" (
     "completionTokens" INTEGER,
     "totalTokens" INTEGER,
     "tokensSettledAt" TIMESTAMP(3),
-    "usage" JSONB,
+    "providerRequestIds" TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
     "publishAttempts" INTEGER NOT NULL DEFAULT 0,
     "messagePublishedAt" TIMESTAMP(3),
     "nextPublishAt" TIMESTAMP(3),
@@ -57,7 +57,33 @@ CREATE TABLE "analysis_jobs" (
     CONSTRAINT "analysis_jobs_reserved_tokens_check" CHECK ("reservedTokens" IS NULL OR "reservedTokens" >= 0),
     CONSTRAINT "analysis_jobs_prompt_tokens_check" CHECK ("promptTokens" IS NULL OR "promptTokens" >= 0),
     CONSTRAINT "analysis_jobs_completion_tokens_check" CHECK ("completionTokens" IS NULL OR "completionTokens" >= 0),
-    CONSTRAINT "analysis_jobs_total_tokens_check" CHECK ("totalTokens" IS NULL OR "totalTokens" >= 0)
+    CONSTRAINT "analysis_jobs_total_tokens_check" CHECK ("totalTokens" IS NULL OR "totalTokens" >= 0),
+    CONSTRAINT "analysis_jobs_request_hash_check" CHECK ("requestHash" ~ '^[0-9a-f]{64}$'),
+    CONSTRAINT "analysis_jobs_error_code_check" CHECK ("lastErrorCode" IS NULL OR "lastErrorCode" ~ '^[A-Z0-9_]{1,64}$'),
+    CONSTRAINT "analysis_jobs_error_message_check" CHECK ("lastErrorMessage" IS NULL OR char_length("lastErrorMessage") <= 256),
+    CONSTRAINT "analysis_jobs_running_lease_check" CHECK (
+        "status" <> 'RUNNING' OR ("leaseToken" IS NOT NULL AND char_length("leaseToken") > 0 AND "leaseExpiresAt" IS NOT NULL)
+    ),
+    CONSTRAINT "analysis_jobs_succeeded_check" CHECK (
+        "status" <> 'SUCCEEDED' OR ("progress" = 100 AND "completedAt" IS NOT NULL AND "tokensSettledAt" IS NOT NULL)
+    ),
+    CONSTRAINT "analysis_jobs_failed_check" CHECK (
+        "status" <> 'FAILED' OR ("completedAt" IS NOT NULL AND "tokensSettledAt" IS NOT NULL AND "lastErrorCode" IS NOT NULL)
+    ),
+    CONSTRAINT "analysis_jobs_terminal_token_settlement_check" CHECK (
+        "status" NOT IN ('SUCCEEDED', 'FAILED') OR
+        (
+            "promptTokens" IS NOT NULL AND
+            "completionTokens" IS NOT NULL AND
+            "totalTokens" IS NOT NULL AND
+            "totalTokens" = "promptTokens" + "completionTokens"
+        ) OR
+        (
+            "idempotencyKey" LIKE 'legacy-report:%' AND
+            "modelVersion" = 'legacy' AND
+            "promptVersion" = 'legacy'
+        )
+    )
 );
 
 -- Backfill one completed ledger entry for every existing report. Token usage is
@@ -89,7 +115,8 @@ SELECT
     report."userId",
     report."repositoryId",
     'legacy-report:' || report."id"::text,
-    md5('legacy-analysis-report:' || report."id"::text),
+    md5('legacy-analysis-report:' || report."id"::text) ||
+        md5('legacy-analysis-report-request:' || report."id"::text),
     report."syncTime",
     'legacy',
     'legacy',

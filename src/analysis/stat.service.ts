@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { UserStat } from '@prisma/client';
+import type { Prisma, UserStat } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import type { AnalysisMetrics } from './metric-calculator.service';
 
@@ -13,14 +13,15 @@ export class StatService {
   async updateStats(
     userId: number,
     newMetrics: AnalysisMetrics,
+    database: Pick<Prisma.TransactionClient, 'userStat'> = this.prisma,
   ): Promise<UserStat> {
-    const existingStat = await this.prisma.userStat.findUnique({
+    const existingStat = await database.userStat.findUnique({
       where: { userId },
     });
 
     if (!existingStat) {
       // Create new stat if not exists
-      return this.prisma.userStat.create({
+      return database.userStat.create({
         data: {
           userId,
           ...newMetrics,
@@ -63,7 +64,7 @@ export class StatService {
       },
     };
 
-    return this.prisma.userStat.update({
+    return database.userStat.update({
       where: { userId },
       data: updatedData,
     });

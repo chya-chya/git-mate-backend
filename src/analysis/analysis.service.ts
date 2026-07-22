@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { RefinerService } from './refiner.service';
 import { PreprocessorService } from './preprocessor.service';
@@ -67,18 +68,18 @@ export class AnalysisService {
       const metrics = this.calculator.calculate(llmResult);
 
       // 5. Save Report, Update Stats, and Deduct Tokens in a Transaction
-      await (this.prisma as any).$transaction(async (tx) => {
+      await this.prisma.$transaction(async (tx) => {
         // A. Save Report
         await tx.analysisReport.create({
           data: {
             userId,
             repositoryId,
-            metrics: llmResult as any,
+            metrics: llmResult as unknown as Prisma.InputJsonValue,
           },
         });
 
         // B. Update User Stats
-        await this.statService.updateStats(userId, metrics);
+        await this.statService.updateStats(userId, metrics, tx);
 
         // C. Deduct Tokens
         await tx.user.update({
@@ -106,25 +107,26 @@ export class AnalysisService {
   /**
    * Pre-calculate the exact tokens required for the data analysis.
    */
-  async estimateTokens(
-    data: CollectedDataDto,
-  ): Promise<{ prCount: number; estimatedTokens: number }> {
+  estimateTokens(data: CollectedDataDto): Promise<{
+    prCount: number;
+    estimatedTokens: number;
+  }> {
     const refinedData = this.refiner.refine(data);
     const prCount = refinedData.pullRequests.length;
     if (prCount === 0) {
-      return { prCount: 0, estimatedTokens: 0 };
+      return Promise.resolve({ prCount: 0, estimatedTokens: 0 });
     }
     const preprocessedData = this.preprocessor.preprocess(refinedData);
     const estimatedTokens =
       this.llmProvider.estimateTokensForData(preprocessedData);
-    return { prCount, estimatedTokens };
+    return Promise.resolve({ prCount, estimatedTokens });
   }
 
   /**
    * Get aggregate stats for a user
    */
-  async getUserStats(userId: number) {
-    return (this.prisma as any).userStat.findUnique({
+  getUserStats(userId: number) {
+    return this.prisma.userStat.findUnique({
       where: { userId },
     });
   }
@@ -132,13 +134,13 @@ export class AnalysisService {
   /**
    * Get all reports for a user, optionally filtered by shared status
    */
-  async getReports(userId: number, isShared?: boolean) {
-    const whereClause: any = { userId };
+  getReports(userId: number, isShared?: boolean) {
+    const whereClause: Prisma.AnalysisReportWhereInput = { userId };
     if (isShared !== undefined) {
       whereClause.isShared = isShared;
     }
 
-    return (this.prisma as any).analysisReport.findMany({
+    return this.prisma.analysisReport.findMany({
       where: whereClause,
       include: { repository: true },
       orderBy: { syncTime: 'desc' },
@@ -148,8 +150,8 @@ export class AnalysisService {
   /**
    * Get all reports for a specific repository
    */
-  async getReportsByRepository(userId: number, repositoryId: number) {
-    return await (this.prisma as any).analysisReport.findMany({
+  getReportsByRepository(userId: number, repositoryId: number) {
+    return this.prisma.analysisReport.findMany({
       where: { userId, repositoryId },
       include: { repository: true },
       orderBy: { syncTime: 'desc' },
@@ -159,8 +161,8 @@ export class AnalysisService {
   /**
    * Get a specific report by ID, verifying ownership
    */
-  async getReportById(id: number, userId: number) {
-    return await (this.prisma as any).analysisReport.findFirst({
+  getReportById(id: number, userId: number) {
+    return this.prisma.analysisReport.findFirst({
       where: { id, userId },
       include: { repository: true },
     });
@@ -181,9 +183,9 @@ export class AnalysisService {
 
     // 2. For each repository, get the latest report
     const summaries = await Promise.all(
-      reports.map(async (r: any) => {
+      reports.map(async (report) => {
         const latestReport = await this.prisma.analysisReport.findFirst({
-          where: { userId, repositoryId: r.repositoryId },
+          where: { userId, repositoryId: report.repositoryId },
           include: { repository: true },
           orderBy: { syncTime: 'desc' },
         });
@@ -261,8 +263,8 @@ export class AnalysisService {
   /**
    * Get all shared representative reports across the platform
    */
-  async getAllPublicReports() {
-    return await this.prisma.user.findMany({
+  getAllPublicReports() {
+    return this.prisma.user.findMany({
       where: {
         representativeReport: {
           isShared: true,

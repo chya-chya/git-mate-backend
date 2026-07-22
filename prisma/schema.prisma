@@ -192,13 +192,13 @@ model AnalysisJob {
   modelVersion   String    @default("legacy")
   promptVersion  String    @default("legacy")
 
-  estimatedTokens  Int?
-  reservedTokens   Int?
-  promptTokens     Int?
-  completionTokens Int?
-  totalTokens      Int?
-  tokensSettledAt  DateTime?
-  usage            Json?
+  estimatedTokens    Int?
+  reservedTokens     Int?
+  promptTokens       Int?
+  completionTokens   Int?
+  totalTokens        Int?
+  tokensSettledAt    DateTime?
+  providerRequestIds String[]  @default([])
 
   publishAttempts    Int       @default(0)
   messagePublishedAt DateTime?

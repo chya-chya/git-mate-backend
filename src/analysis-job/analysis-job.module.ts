@@ -4,6 +4,6 @@ import { AnalysisJobService } from './analysis-job.service';
 
 @Module({
   providers: [AnalysisJobRepository, AnalysisJobService],
-  exports: [AnalysisJobRepository, AnalysisJobService],
+  exports: [AnalysisJobService],
 })
 export class AnalysisJobModule {}
