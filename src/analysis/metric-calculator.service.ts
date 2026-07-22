@@ -1,12 +1,23 @@
 import { Injectable } from '@nestjs/common';
 import { LlmAnalysisResult } from './llm-provider.service';
 
+export interface AnalysisMetrics {
+  mutualRespectScore: number;
+  conflictManagementScore: number;
+  logicalProblemScore: number;
+  reviewGuidingScore: number;
+  documentationScore: number;
+  knowledgeSharingScore: number;
+  technicalInfluenceScore: number;
+  codeStabilityScore: number;
+}
+
 @Injectable()
 export class MetricCalculatorService {
   /**
    * Calculate final metrics based on LLM analysis and raw metadata
    */
-  calculate(llmResult: LlmAnalysisResult) {
+  calculate(llmResult: LlmAnalysisResult): AnalysisMetrics {
     return {
       mutualRespectScore: llmResult.mutual_respect.score * 20,
       conflictManagementScore: llmResult.conflict_management.score * 20,

@@ -1,5 +1,7 @@
 import { Injectable } from '@nestjs/common';
+import type { UserStat } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import type { AnalysisMetrics } from './metric-calculator.service';
 
 @Injectable()
 export class StatService {
@@ -8,17 +10,21 @@ export class StatService {
   /**
    * Update user stats using weighted average
    */
-  async updateStats(userId: number, newMetrics: any) {
-    const existingStat = await (this.prisma as any).userStat.findUnique({
+  async updateStats(
+    userId: number,
+    newMetrics: AnalysisMetrics,
+  ): Promise<UserStat> {
+    const existingStat = await this.prisma.userStat.findUnique({
       where: { userId },
     });
 
     if (!existingStat) {
       // Create new stat if not exists
-      return (this.prisma as any).userStat.create({
+      return this.prisma.userStat.create({
         data: {
           userId,
           ...newMetrics,
+          analysisCount: 1,
         },
       });
     }
@@ -52,9 +58,12 @@ export class StatService {
       codeStabilityScore:
         existingStat.codeStabilityScore * weightOld +
         newMetrics.codeStabilityScore * weightNew,
+      analysisCount: {
+        increment: 1,
+      },
     };
 
-    return (this.prisma as any).userStat.update({
+    return this.prisma.userStat.update({
       where: { userId },
       data: updatedData,
     });
