@@ -15,7 +15,6 @@ import {
 export interface AnalysisJobExecutionContext {
   jobId: string;
   leaseToken: string;
-  providerRequestIds: string[];
 }
 
 interface ResolvedAnalysisJobExecutionContext extends AnalysisJobExecutionContext {
@@ -180,7 +179,7 @@ export class AnalysisService {
 
       // 3. LLM Analysis
       const llmResponse = await this.llmProvider.analyze(preprocessedData);
-      const { result: llmResult, usage } = llmResponse;
+      const { providerRequestId, result: llmResult, usage } = llmResponse;
       this.assertValidTokenUsage(usage);
       if (
         jobContext !== undefined &&
@@ -194,6 +193,7 @@ export class AnalysisService {
           AnalysisJobFailureCode.TOKEN_BUDGET_EXCEEDED,
           usage,
           0,
+          [providerRequestId],
         );
         return;
       }
@@ -263,7 +263,7 @@ export class AnalysisService {
                 promptTokens: usage.promptTokens,
                 completionTokens: usage.completionTokens,
                 totalTokens: usage.totalTokens,
-                providerRequestIds: jobContext.providerRequestIds,
+                providerRequestIds: [providerRequestId],
               },
             },
             tx,
@@ -333,6 +333,7 @@ export class AnalysisService {
     errorCode: AnalysisJobFailureCode,
     usage: AnalysisTokenUsage,
     refundTokens: number,
+    providerRequestIds: string[] = [],
   ): Promise<void> {
     const completedAt = new Date();
     await this.prisma.$transaction(async (tx) => {
@@ -357,7 +358,7 @@ export class AnalysisService {
             promptTokens: usage.promptTokens,
             completionTokens: usage.completionTokens,
             totalTokens: usage.totalTokens,
-            providerRequestIds: jobContext.providerRequestIds,
+            providerRequestIds,
             errorCode,
             errorRetryable: false,
           },

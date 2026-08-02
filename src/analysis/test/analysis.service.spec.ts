@@ -59,6 +59,7 @@ describe('AnalysisService', () => {
         reservedTokens: 20,
       }),
       analyze: jest.fn().mockResolvedValue({
+        providerRequestId: 'chatcmpl_actual_123',
         result: llmResult,
         usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
       }),
@@ -97,7 +98,6 @@ describe('AnalysisService', () => {
   const jobContext = {
     jobId: 'job-1',
     leaseToken: 'lease-1',
-    providerRequestIds: ['req_123'],
   };
 
   it('keeps the synchronous report, stats, and token update atomic', async () => {
@@ -167,7 +167,7 @@ describe('AnalysisService', () => {
         {
           toStatus: string;
           expectedReservedTokens: number;
-          data: { reportId: number };
+          data: { reportId: number; providerRequestIds: string[] };
         },
         unknown,
       ]
@@ -175,6 +175,9 @@ describe('AnalysisService', () => {
     expect(transitionCalls[0][0].toStatus).toBe('SUCCEEDED');
     expect(transitionCalls[0][0].expectedReservedTokens).toBe(20);
     expect(transitionCalls[0][0].data.reportId).toBe(31);
+    expect(transitionCalls[0][0].data.providerRequestIds).toEqual([
+      'chatcmpl_actual_123',
+    ]);
     expect(transitionCalls[0][1]).toBe(transaction);
 
     const debitCall = transaction.user.updateMany.mock.invocationCallOrder[0];
