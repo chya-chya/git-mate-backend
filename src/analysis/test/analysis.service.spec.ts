@@ -1,7 +1,10 @@
 import { AnalysisJobService } from '../../analysis-job/analysis-job.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AnalysisService } from '../analysis.service';
-import { LlmProviderService } from '../llm-provider.service';
+import {
+  LlmProviderReconciliationError,
+  LlmProviderService,
+} from '../llm-provider.service';
 import { MetricCalculatorService } from '../metric-calculator.service';
 import { PreprocessorService } from '../preprocessor.service';
 import { RefinerService } from '../refiner.service';
@@ -22,6 +25,7 @@ describe('AnalysisService', () => {
 
   function createFixture(options?: {
     availableTokens?: number;
+    analyzeError?: Error;
     pullRequests?: unknown[];
     reservedTokens?: number | null;
     tokenUpdateCount?: number;
@@ -53,16 +57,19 @@ describe('AnalysisService', () => {
       }),
     };
     const preprocessor = { preprocess: jest.fn().mockReturnValue({}) };
+    const analyze = options?.analyzeError
+      ? jest.fn().mockRejectedValue(options.analyzeError)
+      : jest.fn().mockResolvedValue({
+          providerRequestId: 'chatcmpl_actual_123',
+          result: llmResult,
+          usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+        });
     const llmProvider = {
       estimateTokenReservationForData: jest.fn().mockReturnValue({
         estimatedTokens: 10,
         reservedTokens: 20,
       }),
-      analyze: jest.fn().mockResolvedValue({
-        providerRequestId: 'chatcmpl_actual_123',
-        result: llmResult,
-        usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
-      }),
+      analyze,
     };
     const calculator = { calculate: jest.fn().mockReturnValue(metrics) };
     const statService = { updateStats: jest.fn().mockResolvedValue({}) };
@@ -261,6 +268,89 @@ describe('AnalysisService', () => {
     expect(failureInput.toStatus).toBe('FAILED');
     expect(failureInput.data.errorCode).toBe('NO_ANALYZABLE_DATA');
     expect(failureInput.data.totalTokens).toBe(0);
+  });
+
+  it('settles known usage and prevents retry when billed JSON parsing fails', async () => {
+    const { analysisJobService, service, transaction } = createFixture({
+      reservedTokens: 20,
+      analyzeError: new LlmProviderReconciliationError(
+        'chatcmpl_invalid_json',
+        { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+      ),
+    });
+
+    await service.runAnalysisJob({} as never, jobContext);
+
+    expect(transaction.analysisReport.create).not.toHaveBeenCalled();
+    expect(transaction.user.update).toHaveBeenCalledWith({
+      where: { id: 7 },
+      data: { availableTokens: { increment: 5 } },
+    });
+    const transitionCalls = analysisJobService.transition.mock
+      .calls as unknown as Array<
+      [
+        {
+          toStatus: string;
+          data: {
+            errorCode: string;
+            errorRetryable: boolean;
+            providerRequestIds: string[];
+            totalTokens: number;
+          };
+        },
+        unknown,
+      ]
+    >;
+    expect(transitionCalls[0][0]).toMatchObject({
+      toStatus: 'FAILED',
+      data: {
+        errorCode: 'PROVIDER_RECONCILIATION_REQUIRED',
+        errorRetryable: false,
+        providerRequestIds: ['chatcmpl_invalid_json'],
+        totalTokens: 15,
+      },
+    });
+  });
+
+  it('keeps the reservation and prevents retry when billed usage is unknown', async () => {
+    const { analysisJobService, service, transaction } = createFixture({
+      reservedTokens: 20,
+      analyzeError: new LlmProviderReconciliationError(
+        'chatcmpl_missing_usage',
+        null,
+      ),
+    });
+
+    await service.runAnalysisJob({} as never, jobContext);
+
+    expect(transaction.analysisReport.create).not.toHaveBeenCalled();
+    expect(transaction.user.update).not.toHaveBeenCalled();
+    const transitionCalls = analysisJobService.transition.mock
+      .calls as unknown as Array<
+      [
+        {
+          toStatus: string;
+          expectedReservedTokens: number;
+          data: {
+            errorCode: string;
+            errorRetryable: boolean;
+            providerRequestIds: string[];
+            totalTokens: number;
+          };
+        },
+        unknown,
+      ]
+    >;
+    expect(transitionCalls[0][0]).toMatchObject({
+      toStatus: 'FAILED',
+      expectedReservedTokens: 20,
+      data: {
+        errorCode: 'PROVIDER_RECONCILIATION_REQUIRED',
+        errorRetryable: false,
+        providerRequestIds: ['chatcmpl_missing_usage'],
+        totalTokens: 0,
+      },
+    });
   });
 
   it('propagates a stale success CAS so the worker transaction rolls back', async () => {

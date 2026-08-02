@@ -4,6 +4,7 @@ import { CollectedDataDto } from '../../collection/types/github-api.types';
 import {
   InvalidLlmProviderResponseError,
   LlmProviderService,
+  LlmProviderReconciliationError,
   LlmTokenEstimationError,
 } from '../llm-provider.service';
 
@@ -57,6 +58,24 @@ describe('LlmProviderService billing metadata', () => {
 
     await expect(service.analyze(data)).resolves.toMatchObject({
       providerRequestId: 'chatcmpl_actual_123',
+      usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+    });
+  });
+
+  it('preserves request ID and usage when billed JSON cannot be parsed', async () => {
+    const { service } = createService({
+      id: 'chatcmpl_invalid_json',
+      choices: [{ message: { content: 'not-json' } }],
+      usage: {
+        prompt_tokens: 10,
+        completion_tokens: 5,
+        total_tokens: 15,
+      },
+    });
+
+    await expect(service.analyze(data)).rejects.toMatchObject({
+      name: LlmProviderReconciliationError.name,
+      providerRequestId: 'chatcmpl_invalid_json',
       usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
     });
   });

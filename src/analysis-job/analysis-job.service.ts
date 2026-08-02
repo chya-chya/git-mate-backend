@@ -36,6 +36,7 @@ export enum AnalysisJobFailureCode {
   MAX_ATTEMPTS_EXCEEDED = 'MAX_ATTEMPTS_EXCEEDED',
   NO_ANALYZABLE_DATA = 'NO_ANALYZABLE_DATA',
   PUBLISH_FAILED = 'PUBLISH_FAILED',
+  PROVIDER_RECONCILIATION_REQUIRED = 'PROVIDER_RECONCILIATION_REQUIRED',
   REPOSITORY_UNAVAILABLE = 'REPOSITORY_UNAVAILABLE',
   TOKEN_BUDGET_EXCEEDED = 'TOKEN_BUDGET_EXCEEDED',
 }
@@ -50,6 +51,8 @@ const SAFE_ERROR_MESSAGES: Record<AnalysisJobFailureCode, string> = {
     'No analyzable repository activity was found.',
   [AnalysisJobFailureCode.PUBLISH_FAILED]:
     'The analysis job could not be published.',
+  [AnalysisJobFailureCode.PROVIDER_RECONCILIATION_REQUIRED]:
+    'The provider charge requires reconciliation.',
   [AnalysisJobFailureCode.REPOSITORY_UNAVAILABLE]:
     'The repository is unavailable.',
   [AnalysisJobFailureCode.TOKEN_BUDGET_EXCEEDED]:

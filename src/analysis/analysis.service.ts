@@ -3,7 +3,11 @@ import { AnalysisJobStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { RefinerService } from './refiner.service';
 import { PreprocessorService } from './preprocessor.service';
-import { LlmProviderService } from './llm-provider.service';
+import {
+  LlmAnalysisResponse,
+  LlmProviderReconciliationError,
+  LlmProviderService,
+} from './llm-provider.service';
 import { MetricCalculatorService } from './metric-calculator.service';
 import { StatService } from './stat.service';
 import { CollectedDataDto } from '../collection/types/github-api.types';
@@ -178,9 +182,43 @@ export class AnalysisService {
       }
 
       // 3. LLM Analysis
-      const llmResponse = await this.llmProvider.analyze(preprocessedData);
+      let llmResponse: LlmAnalysisResponse;
+      try {
+        llmResponse = await this.llmProvider.analyze(preprocessedData);
+      } catch (error) {
+        if (
+          jobContext !== undefined &&
+          error instanceof LlmProviderReconciliationError
+        ) {
+          await this.terminateProviderReconciliation(
+            userId,
+            repositoryId,
+            jobContext,
+            reservedTokens,
+            error.providerRequestId,
+            error.usage,
+          );
+          return;
+        }
+        throw error;
+      }
       const { providerRequestId, result: llmResult, usage } = llmResponse;
-      this.assertValidTokenUsage(usage);
+      try {
+        this.assertValidTokenUsage(usage);
+      } catch (error) {
+        if (jobContext !== undefined) {
+          await this.terminateProviderReconciliation(
+            userId,
+            repositoryId,
+            jobContext,
+            reservedTokens,
+            providerRequestId,
+            null,
+          );
+          return;
+        }
+        throw error;
+      }
       if (
         jobContext !== undefined &&
         reservedTokens !== null &&
@@ -199,7 +237,23 @@ export class AnalysisService {
       }
 
       // 4. Calculate Final Metrics
-      const metrics = this.calculator.calculate(llmResult);
+      let metrics: ReturnType<MetricCalculatorService['calculate']>;
+      try {
+        metrics = this.calculator.calculate(llmResult);
+      } catch (error) {
+        if (jobContext !== undefined) {
+          await this.terminateProviderReconciliation(
+            userId,
+            repositoryId,
+            jobContext,
+            reservedTokens,
+            providerRequestId,
+            usage,
+          );
+          return;
+        }
+        throw error;
+      }
 
       // 5. Save Report, Update Stats, and Deduct Tokens in a Transaction
       await this.prisma.$transaction(async (tx) => {
@@ -366,6 +420,29 @@ export class AnalysisService {
         tx,
       );
     });
+  }
+
+  private terminateProviderReconciliation(
+    userId: number,
+    repositoryId: number,
+    jobContext: ResolvedAnalysisJobExecutionContext,
+    reservedTokens: number | null,
+    providerRequestId: string | null,
+    usage: AnalysisTokenUsage | null,
+  ): Promise<void> {
+    const refundTokens =
+      usage === null || reservedTokens === null
+        ? 0
+        : Math.max(0, reservedTokens - usage.totalTokens);
+    return this.terminateWorkerJob(
+      userId,
+      repositoryId,
+      jobContext,
+      AnalysisJobFailureCode.PROVIDER_RECONCILIATION_REQUIRED,
+      usage ?? ZERO_TOKEN_USAGE,
+      refundTokens,
+      providerRequestId === null ? [] : [providerRequestId],
+    );
   }
 
   private assertValidReservation(reservation: {

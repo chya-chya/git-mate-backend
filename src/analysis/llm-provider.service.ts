@@ -26,19 +26,31 @@ export interface LlmAnalysisResult {
   summary: string;
 }
 
+export interface LlmTokenUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+
 export interface LlmAnalysisResponse {
   providerRequestId: string;
   result: LlmAnalysisResult;
-  usage: {
-    promptTokens: number;
-    completionTokens: number;
-    totalTokens: number;
-  };
+  usage: LlmTokenUsage;
 }
 
-export class InvalidLlmProviderResponseError extends Error {
-  constructor(readonly providerRequestId: string | null) {
-    super('LLM provider response is missing valid billing metadata.');
+export class LlmProviderReconciliationError extends Error {
+  constructor(
+    readonly providerRequestId: string | null,
+    readonly usage: LlmTokenUsage | null,
+  ) {
+    super('A billed LLM response requires reconciliation.');
+    this.name = LlmProviderReconciliationError.name;
+  }
+}
+
+export class InvalidLlmProviderResponseError extends LlmProviderReconciliationError {
+  constructor(providerRequestId: string | null) {
+    super(providerRequestId, null);
     this.name = InvalidLlmProviderResponseError.name;
   }
 }
@@ -174,9 +186,20 @@ JSON 이스케이프 규칙을 철저히 준수하세요. 문자열 내에 쌍�
         `LLM Actual Usage - Prompt: ${usage.prompt_tokens}, Completion: ${usage.completion_tokens}, Total: ${usage.total_tokens}`,
       );
 
-      const result = JSON.parse(
-        response.choices[0].message.content || '{}',
-      ) as LlmAnalysisResult;
+      let result: LlmAnalysisResult;
+      try {
+        const content = response.choices.at(0)?.message.content;
+        if (typeof content !== 'string' || content.length === 0) {
+          throw new Error('The provider response content is missing.');
+        }
+        result = JSON.parse(content) as LlmAnalysisResult;
+      } catch {
+        throw new LlmProviderReconciliationError(providerRequestId, {
+          promptTokens: usage.prompt_tokens,
+          completionTokens: usage.completion_tokens,
+          totalTokens: usage.total_tokens,
+        });
+      }
 
       return {
         providerRequestId,
