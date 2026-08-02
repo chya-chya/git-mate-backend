@@ -15,6 +15,20 @@ export interface AnalysisJobExecutionContext {
   providerRequestIds: string[];
 }
 
+export class InsufficientAnalysisTokensError extends Error {
+  constructor() {
+    super('Insufficient tokens to settle the analysis result.');
+    this.name = InsufficientAnalysisTokensError.name;
+  }
+}
+
+export class InvalidAnalysisTokenUsageError extends Error {
+  constructor() {
+    super('Analysis token usage is invalid.');
+    this.name = InvalidAnalysisTokenUsageError.name;
+  }
+}
+
 @Injectable()
 export class AnalysisService {
   private readonly logger = new Logger(AnalysisService.name);
@@ -39,13 +53,15 @@ export class AnalysisService {
   /**
    * Run the worker pipeline and atomically commit its durable job result.
    */
-  runAnalysisJob(
-    userId: number,
-    repositoryId: number,
+  async runAnalysisJob(
     data: CollectedDataDto,
     jobContext: AnalysisJobExecutionContext,
   ) {
-    return this.executeAnalysis(userId, repositoryId, data, jobContext);
+    const job = await this.analysisJobService.getRunningJobContext(
+      jobContext.jobId,
+      jobContext.leaseToken,
+    );
+    return this.executeAnalysis(job.userId, job.repositoryId, data, jobContext);
   }
 
   private async executeAnalysis(
@@ -88,6 +104,7 @@ export class AnalysisService {
       // 3. LLM Analysis
       const llmResponse = await this.llmProvider.analyze(preprocessedData);
       const { result: llmResult, usage } = llmResponse;
+      this.assertValidTokenUsage(usage);
 
       // 4. Calculate Final Metrics
       const metrics = this.calculator.calculate(llmResult);
@@ -108,14 +125,20 @@ export class AnalysisService {
         await this.statService.updateStats(userId, metrics, tx);
 
         // C. Deduct Tokens
-        await tx.user.update({
-          where: { id: userId },
+        const tokenSettlement = await tx.user.updateMany({
+          where: {
+            id: userId,
+            availableTokens: { gte: usage.totalTokens },
+          },
           data: {
             availableTokens: {
               decrement: usage.totalTokens,
             },
           },
         });
+        if (tokenSettlement.count !== 1) {
+          throw new InsufficientAnalysisTokensError();
+        }
 
         if (jobContext !== undefined) {
           const completedAt = new Date();
@@ -125,6 +148,8 @@ export class AnalysisService {
               fromStatus: AnalysisJobStatus.RUNNING,
               toStatus: AnalysisJobStatus.SUCCEEDED,
               expectedLeaseToken: jobContext.leaseToken,
+              expectedUserId: userId,
+              expectedRepositoryId: repositoryId,
               data: {
                 reportId: report.id,
                 completedAt,
@@ -149,6 +174,24 @@ export class AnalysisService {
     } catch (error) {
       this.logger.error('Analysis failed', error);
       throw error;
+    }
+  }
+
+  private assertValidTokenUsage(usage: {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+  }): void {
+    if (
+      !Number.isSafeInteger(usage.promptTokens) ||
+      usage.promptTokens < 0 ||
+      !Number.isSafeInteger(usage.completionTokens) ||
+      usage.completionTokens < 0 ||
+      !Number.isSafeInteger(usage.totalTokens) ||
+      usage.totalTokens < 0 ||
+      usage.promptTokens + usage.completionTokens !== usage.totalTokens
+    ) {
+      throw new InvalidAnalysisTokenUsageError();
     }
   }
 

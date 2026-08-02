@@ -8,6 +8,7 @@ import {
 describe('AnalysisJobRepository', () => {
   const prisma = {
     analysisJob: {
+      findFirst: jest.fn(),
       updateMany: jest.fn(),
     },
   };
@@ -32,6 +33,8 @@ describe('AnalysisJobRepository', () => {
           toStatus: AnalysisJobStatus.SUCCEEDED,
           expectedLeaseToken: 'lease-1',
           requiredReportId: 3,
+          requiredUserId: 7,
+          requiredRepositoryId: 9,
           data: { progress: 100 },
         },
         transaction as never,
@@ -44,6 +47,8 @@ describe('AnalysisJobRepository', () => {
         status: AnalysisJobStatus.RUNNING,
         leaseToken: 'lease-1',
         report: { is: { id: 3 } },
+        userId: 7,
+        repositoryId: 9,
       },
       data: {
         progress: 100,
@@ -51,6 +56,25 @@ describe('AnalysisJobRepository', () => {
       },
     });
     expect(prisma.analysisJob.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('loads worker ownership only when status and lease match', async () => {
+    prisma.analysisJob.findFirst.mockResolvedValue({
+      id: 'job-1',
+      userId: 7,
+      repositoryId: 9,
+    });
+
+    await repository.findRunningByLease('job-1', 'lease-1');
+
+    expect(prisma.analysisJob.findFirst).toHaveBeenCalledWith({
+      where: {
+        id: 'job-1',
+        status: AnalysisJobStatus.RUNNING,
+        leaseToken: 'lease-1',
+      },
+      select: { id: true, userId: true, repositoryId: true },
+    });
   });
 
   it('reports a stale transition when no row matches the guard', async () => {
@@ -93,7 +117,7 @@ describe('AnalysisJobRepository', () => {
     } as unknown as TransitionAnalysisJobRecordInput;
 
     await expect(repository.transitionStatus(unsafeInput)).rejects.toThrow(
-      'A linked report is required',
+      'A linked report, user, and repository are required',
     );
     expect(prisma.analysisJob.updateMany).not.toHaveBeenCalled();
   });

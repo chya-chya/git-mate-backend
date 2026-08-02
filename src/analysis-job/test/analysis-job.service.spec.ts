@@ -18,6 +18,7 @@ describe('AnalysisJobService', () => {
   const repository = {
     create: jest.fn(),
     findById: jest.fn(),
+    findRunningByLease: jest.fn(),
     transitionStatus: jest.fn(),
   };
   const service = new AnalysisJobService(
@@ -99,6 +100,30 @@ describe('AnalysisJobService', () => {
     expect(repository.transitionStatus).not.toHaveBeenCalled();
   });
 
+  it('loads the authoritative worker context by status and lease', async () => {
+    repository.findRunningByLease.mockResolvedValue({
+      id: 'job-1',
+      userId: 7,
+      repositoryId: 9,
+    });
+
+    await expect(
+      service.getRunningJobContext('job-1', 'lease-1'),
+    ).resolves.toEqual({ id: 'job-1', userId: 7, repositoryId: 9 });
+    expect(repository.findRunningByLease).toHaveBeenCalledWith(
+      'job-1',
+      'lease-1',
+    );
+  });
+
+  it('rejects a worker context whose status or lease no longer matches', async () => {
+    repository.findRunningByLease.mockResolvedValue(null);
+
+    await expect(
+      service.getRunningJobContext('job-1', 'stale-lease'),
+    ).rejects.toBeInstanceOf(StaleAnalysisJobTransitionError);
+  });
+
   it('persists a successful terminal transition with its lease and report fences', async () => {
     repository.transitionStatus.mockResolvedValue(true);
     const database = { analysisJob: {} } as unknown as AnalysisJobDatabase;
@@ -109,6 +134,8 @@ describe('AnalysisJobService', () => {
         fromStatus: AnalysisJobStatus.RUNNING,
         toStatus: AnalysisJobStatus.SUCCEEDED,
         expectedLeaseToken: 'lease-1',
+        expectedUserId: 7,
+        expectedRepositoryId: 9,
         data: { ...settlement, reportId: 3 },
       },
       database,
@@ -121,6 +148,8 @@ describe('AnalysisJobService', () => {
         toStatus: AnalysisJobStatus.SUCCEEDED,
         expectedLeaseToken: 'lease-1',
         requiredReportId: 3,
+        requiredUserId: 7,
+        requiredRepositoryId: 9,
         data: {
           stage: null,
           progress: 100,

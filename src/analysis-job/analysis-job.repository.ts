@@ -41,10 +41,17 @@ export interface AnalysisJobTransitionData {
 
 export type AnalysisJobDatabase = Pick<Prisma.TransactionClient, 'analysisJob'>;
 
+export type RunningAnalysisJobContext = Pick<
+  AnalysisJob,
+  'id' | 'userId' | 'repositoryId'
+>;
+
 interface TransitionAnalysisJobRecordBase {
   jobId: string;
   toStatus: AnalysisJobStatus;
   requiredReportId?: number;
+  requiredUserId?: number;
+  requiredRepositoryId?: number;
   data: AnalysisJobTransitionData;
 }
 
@@ -54,6 +61,8 @@ export type TransitionAnalysisJobRecordInput =
       toStatus: typeof AnalysisJobStatus.SUCCEEDED;
       expectedLeaseToken: string;
       requiredReportId: number;
+      requiredUserId: number;
+      requiredRepositoryId: number;
     })
   | (TransitionAnalysisJobRecordBase & {
       fromStatus: typeof AnalysisJobStatus.RUNNING;
@@ -62,6 +71,8 @@ export type TransitionAnalysisJobRecordInput =
         | typeof AnalysisJobStatus.FAILED;
       expectedLeaseToken: string;
       requiredReportId?: never;
+      requiredUserId?: never;
+      requiredRepositoryId?: never;
     })
   | (TransitionAnalysisJobRecordBase & {
       fromStatus: typeof AnalysisJobStatus.QUEUED;
@@ -70,6 +81,8 @@ export type TransitionAnalysisJobRecordInput =
         | typeof AnalysisJobStatus.FAILED;
       expectedLeaseToken?: never;
       requiredReportId?: never;
+      requiredUserId?: never;
+      requiredRepositoryId?: never;
     });
 
 @Injectable()
@@ -90,6 +103,25 @@ export class AnalysisJobRepository {
     return database.analysisJob.findUnique({ where: { id: jobId } });
   }
 
+  findRunningByLease(
+    jobId: string,
+    leaseToken: string,
+    database: AnalysisJobDatabase = this.prisma,
+  ): Promise<RunningAnalysisJobContext | null> {
+    return database.analysisJob.findFirst({
+      where: {
+        id: jobId,
+        status: AnalysisJobStatus.RUNNING,
+        leaseToken,
+      },
+      select: {
+        id: true,
+        userId: true,
+        repositoryId: true,
+      },
+    });
+  }
+
   async transitionStatus(
     input: TransitionAnalysisJobRecordInput,
     database: AnalysisJobDatabase = this.prisma,
@@ -103,9 +135,16 @@ export class AnalysisJobRepository {
     }
     if (
       input.toStatus === AnalysisJobStatus.SUCCEEDED &&
-      (!Number.isInteger(input.requiredReportId) || input.requiredReportId <= 0)
+      (!Number.isInteger(input.requiredReportId) ||
+        input.requiredReportId <= 0 ||
+        !Number.isInteger(input.requiredUserId) ||
+        input.requiredUserId <= 0 ||
+        !Number.isInteger(input.requiredRepositoryId) ||
+        input.requiredRepositoryId <= 0)
     ) {
-      throw new Error('A linked report is required for SUCCEEDED job updates');
+      throw new Error(
+        'A linked report, user, and repository are required for SUCCEEDED job updates',
+      );
     }
 
     const result = await database.analysisJob.updateMany({
@@ -118,6 +157,12 @@ export class AnalysisJobRepository {
         ...(input.requiredReportId === undefined
           ? {}
           : { report: { is: { id: input.requiredReportId } } }),
+        ...(input.requiredUserId === undefined
+          ? {}
+          : { userId: input.requiredUserId }),
+        ...(input.requiredRepositoryId === undefined
+          ? {}
+          : { repositoryId: input.requiredRepositoryId }),
       },
       data: {
         ...input.data,

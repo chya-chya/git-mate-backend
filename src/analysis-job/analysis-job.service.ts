@@ -8,6 +8,7 @@ import {
 import {
   AnalysisJobDatabase,
   AnalysisJobRepository,
+  RunningAnalysisJobContext,
   TransitionAnalysisJobRecordInput,
 } from './analysis-job.repository';
 
@@ -101,6 +102,8 @@ export type TransitionAnalysisJobInput =
       fromStatus: typeof AnalysisJobStatus.RUNNING;
       toStatus: typeof AnalysisJobStatus.SUCCEEDED;
       expectedLeaseToken: string;
+      expectedUserId: number;
+      expectedRepositoryId: number;
       data: TokenSettlementInput & { reportId: number };
     }
   | {
@@ -165,6 +168,25 @@ export class AnalysisJobService {
 
   findById(jobId: string): Promise<AnalysisJob | null> {
     return this.repository.findById(jobId);
+  }
+
+  async getRunningJobContext(
+    jobId: string,
+    expectedLeaseToken: string,
+  ): Promise<RunningAnalysisJobContext> {
+    this.assertNonEmptyString(jobId, 'jobId');
+    this.assertNonEmptyString(expectedLeaseToken, 'expectedLeaseToken');
+    const job = await this.repository.findRunningByLease(
+      jobId,
+      expectedLeaseToken,
+    );
+    if (!job) {
+      throw new StaleAnalysisJobTransitionError(
+        jobId,
+        AnalysisJobStatus.RUNNING,
+      );
+    }
+    return job;
   }
 
   async transition(
@@ -263,6 +285,22 @@ export class AnalysisJobService {
       if (!Number.isInteger(input.data.reportId) || input.data.reportId <= 0) {
         throw new InvalidAnalysisJobInputError(
           'reportId must be a positive integer',
+        );
+      }
+      if (
+        !Number.isInteger(input.expectedUserId) ||
+        input.expectedUserId <= 0
+      ) {
+        throw new InvalidAnalysisJobInputError(
+          'expectedUserId must be a positive integer',
+        );
+      }
+      if (
+        !Number.isInteger(input.expectedRepositoryId) ||
+        input.expectedRepositoryId <= 0
+      ) {
+        throw new InvalidAnalysisJobInputError(
+          'expectedRepositoryId must be a positive integer',
         );
       }
       return;
@@ -387,6 +425,8 @@ export class AnalysisJobService {
         toStatus: input.toStatus,
         expectedLeaseToken: input.expectedLeaseToken,
         requiredReportId: input.data.reportId,
+        requiredUserId: input.expectedUserId,
+        requiredRepositoryId: input.expectedRepositoryId,
         data: terminalData,
       };
     }
