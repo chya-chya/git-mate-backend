@@ -7,13 +7,32 @@ import { LlmProviderService } from './llm-provider.service';
 import { MetricCalculatorService } from './metric-calculator.service';
 import { StatService } from './stat.service';
 import { CollectedDataDto } from '../collection/types/github-api.types';
-import { AnalysisJobService } from '../analysis-job/analysis-job.service';
+import {
+  AnalysisJobFailureCode,
+  AnalysisJobService,
+} from '../analysis-job/analysis-job.service';
 
 export interface AnalysisJobExecutionContext {
   jobId: string;
   leaseToken: string;
   providerRequestIds: string[];
 }
+
+interface ResolvedAnalysisJobExecutionContext extends AnalysisJobExecutionContext {
+  reservedTokens: number | null;
+}
+
+interface AnalysisTokenUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+
+const ZERO_TOKEN_USAGE: AnalysisTokenUsage = {
+  promptTokens: 0,
+  completionTokens: 0,
+  totalTokens: 0,
+};
 
 export class InsufficientAnalysisTokensError extends Error {
   constructor() {
@@ -26,6 +45,13 @@ export class InvalidAnalysisTokenUsageError extends Error {
   constructor() {
     super('Analysis token usage is invalid.');
     this.name = InvalidAnalysisTokenUsageError.name;
+  }
+}
+
+export class AnalysisTokenBudgetExceededError extends Error {
+  constructor() {
+    super('Analysis token usage exceeded its reserved budget.');
+    this.name = AnalysisTokenBudgetExceededError.name;
   }
 }
 
@@ -61,14 +87,17 @@ export class AnalysisService {
       jobContext.jobId,
       jobContext.leaseToken,
     );
-    return this.executeAnalysis(job.userId, job.repositoryId, data, jobContext);
+    return this.executeAnalysis(job.userId, job.repositoryId, data, {
+      ...jobContext,
+      reservedTokens: job.reservedTokens,
+    });
   }
 
   private async executeAnalysis(
     userId: number,
     repositoryId: number,
     data: CollectedDataDto,
-    jobContext?: AnalysisJobExecutionContext,
+    jobContext?: ResolvedAnalysisJobExecutionContext,
   ) {
     this.logger.log(
       `Starting analysis for User ${userId}, Repo ${repositoryId}...`,
@@ -84,7 +113,7 @@ export class AnalysisService {
       throw new Error(`User with ID ${userId} not found.`);
     }
 
-    if (user.availableTokens <= 0) {
+    if (jobContext === undefined && user.availableTokens <= 0) {
       throw new Error(
         `Insufficient tokens. Available: ${user.availableTokens}. Please recharge your tokens.`,
       );
@@ -95,16 +124,79 @@ export class AnalysisService {
       const refinedData = this.refiner.refine(data);
       if (refinedData.pullRequests.length === 0) {
         this.logger.warn('No meaningful data to analyze after refinement.');
+        if (jobContext !== undefined) {
+          await this.terminateWorkerJob(
+            userId,
+            repositoryId,
+            jobContext,
+            AnalysisJobFailureCode.NO_ANALYZABLE_DATA,
+            ZERO_TOKEN_USAGE,
+            jobContext.reservedTokens ?? 0,
+          );
+        }
         return;
       }
 
       // 2. Preprocess Data
       const preprocessedData = this.preprocessor.preprocess(refinedData);
 
+      let reservedTokens: number | null = null;
+      if (jobContext !== undefined) {
+        const reservation =
+          this.llmProvider.estimateTokenReservationForData(preprocessedData);
+        try {
+          reservedTokens = await this.ensureWorkerTokenReservation(
+            userId,
+            repositoryId,
+            jobContext,
+            reservation,
+          );
+        } catch (error) {
+          if (error instanceof InsufficientAnalysisTokensError) {
+            await this.terminateWorkerJob(
+              userId,
+              repositoryId,
+              jobContext,
+              AnalysisJobFailureCode.INSUFFICIENT_TOKENS,
+              ZERO_TOKEN_USAGE,
+              0,
+            );
+            return;
+          }
+          if (error instanceof AnalysisTokenBudgetExceededError) {
+            await this.terminateWorkerJob(
+              userId,
+              repositoryId,
+              jobContext,
+              AnalysisJobFailureCode.TOKEN_BUDGET_EXCEEDED,
+              ZERO_TOKEN_USAGE,
+              jobContext.reservedTokens ?? 0,
+            );
+            return;
+          }
+          throw error;
+        }
+      }
+
       // 3. LLM Analysis
       const llmResponse = await this.llmProvider.analyze(preprocessedData);
       const { result: llmResult, usage } = llmResponse;
       this.assertValidTokenUsage(usage);
+      if (
+        jobContext !== undefined &&
+        reservedTokens !== null &&
+        usage.totalTokens > reservedTokens
+      ) {
+        await this.terminateWorkerJob(
+          userId,
+          repositoryId,
+          jobContext,
+          AnalysisJobFailureCode.TOKEN_BUDGET_EXCEEDED,
+          usage,
+          0,
+        );
+        return;
+      }
 
       // 4. Calculate Final Metrics
       const metrics = this.calculator.calculate(llmResult);
@@ -125,22 +217,35 @@ export class AnalysisService {
         await this.statService.updateStats(userId, metrics, tx);
 
         // C. Deduct Tokens
-        const tokenSettlement = await tx.user.updateMany({
-          where: {
-            id: userId,
-            availableTokens: { gte: usage.totalTokens },
-          },
-          data: {
-            availableTokens: {
-              decrement: usage.totalTokens,
+        if (reservedTokens === null) {
+          const tokenSettlement = await tx.user.updateMany({
+            where: {
+              id: userId,
+              availableTokens: { gte: usage.totalTokens },
             },
-          },
-        });
-        if (tokenSettlement.count !== 1) {
-          throw new InsufficientAnalysisTokensError();
+            data: {
+              availableTokens: {
+                decrement: usage.totalTokens,
+              },
+            },
+          });
+          if (tokenSettlement.count !== 1) {
+            throw new InsufficientAnalysisTokensError();
+          }
+        } else {
+          const refundTokens = reservedTokens - usage.totalTokens;
+          if (refundTokens > 0) {
+            await tx.user.update({
+              where: { id: userId },
+              data: { availableTokens: { increment: refundTokens } },
+            });
+          }
         }
 
         if (jobContext !== undefined) {
+          if (reservedTokens === null) {
+            throw new InvalidAnalysisTokenUsageError();
+          }
           const completedAt = new Date();
           await this.analysisJobService.transition(
             {
@@ -150,6 +255,7 @@ export class AnalysisService {
               expectedLeaseToken: jobContext.leaseToken,
               expectedUserId: userId,
               expectedRepositoryId: repositoryId,
+              expectedReservedTokens: reservedTokens,
               data: {
                 reportId: report.id,
                 completedAt,
@@ -174,6 +280,104 @@ export class AnalysisService {
     } catch (error) {
       this.logger.error('Analysis failed', error);
       throw error;
+    }
+  }
+
+  private async ensureWorkerTokenReservation(
+    userId: number,
+    repositoryId: number,
+    jobContext: ResolvedAnalysisJobExecutionContext,
+    reservation: { estimatedTokens: number; reservedTokens: number },
+  ): Promise<number> {
+    this.assertValidReservation(reservation);
+    if (jobContext.reservedTokens !== null) {
+      if (jobContext.reservedTokens < reservation.reservedTokens) {
+        throw new AnalysisTokenBudgetExceededError();
+      }
+      return jobContext.reservedTokens;
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      const debit = await tx.user.updateMany({
+        where: {
+          id: userId,
+          availableTokens: { gte: reservation.reservedTokens },
+        },
+        data: {
+          availableTokens: { decrement: reservation.reservedTokens },
+        },
+      });
+      if (debit.count !== 1) {
+        throw new InsufficientAnalysisTokensError();
+      }
+      await this.analysisJobService.reserveTokens(
+        {
+          jobId: jobContext.jobId,
+          expectedLeaseToken: jobContext.leaseToken,
+          expectedUserId: userId,
+          expectedRepositoryId: repositoryId,
+          estimatedTokens: reservation.estimatedTokens,
+          reservedTokens: reservation.reservedTokens,
+        },
+        tx,
+      );
+    });
+    jobContext.reservedTokens = reservation.reservedTokens;
+    return reservation.reservedTokens;
+  }
+
+  private async terminateWorkerJob(
+    userId: number,
+    repositoryId: number,
+    jobContext: ResolvedAnalysisJobExecutionContext,
+    errorCode: AnalysisJobFailureCode,
+    usage: AnalysisTokenUsage,
+    refundTokens: number,
+  ): Promise<void> {
+    const completedAt = new Date();
+    await this.prisma.$transaction(async (tx) => {
+      if (refundTokens > 0) {
+        await tx.user.update({
+          where: { id: userId },
+          data: { availableTokens: { increment: refundTokens } },
+        });
+      }
+      await this.analysisJobService.transition(
+        {
+          jobId: jobContext.jobId,
+          fromStatus: AnalysisJobStatus.RUNNING,
+          toStatus: AnalysisJobStatus.FAILED,
+          expectedLeaseToken: jobContext.leaseToken,
+          expectedUserId: userId,
+          expectedRepositoryId: repositoryId,
+          expectedReservedTokens: jobContext.reservedTokens,
+          data: {
+            completedAt,
+            tokensSettledAt: completedAt,
+            promptTokens: usage.promptTokens,
+            completionTokens: usage.completionTokens,
+            totalTokens: usage.totalTokens,
+            providerRequestIds: jobContext.providerRequestIds,
+            errorCode,
+            errorRetryable: false,
+          },
+        },
+        tx,
+      );
+    });
+  }
+
+  private assertValidReservation(reservation: {
+    estimatedTokens: number;
+    reservedTokens: number;
+  }): void {
+    if (
+      !Number.isSafeInteger(reservation.estimatedTokens) ||
+      reservation.estimatedTokens < 0 ||
+      !Number.isSafeInteger(reservation.reservedTokens) ||
+      reservation.reservedTokens < reservation.estimatedTokens
+    ) {
+      throw new InvalidAnalysisTokenUsageError();
     }
   }
 

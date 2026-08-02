@@ -34,6 +34,7 @@ export enum AnalysisJobFailureCode {
   ANALYSIS_FAILED = 'ANALYSIS_FAILED',
   INSUFFICIENT_TOKENS = 'INSUFFICIENT_TOKENS',
   MAX_ATTEMPTS_EXCEEDED = 'MAX_ATTEMPTS_EXCEEDED',
+  NO_ANALYZABLE_DATA = 'NO_ANALYZABLE_DATA',
   PUBLISH_FAILED = 'PUBLISH_FAILED',
   REPOSITORY_UNAVAILABLE = 'REPOSITORY_UNAVAILABLE',
   TOKEN_BUDGET_EXCEEDED = 'TOKEN_BUDGET_EXCEEDED',
@@ -45,6 +46,8 @@ const SAFE_ERROR_MESSAGES: Record<AnalysisJobFailureCode, string> = {
     'The token balance is insufficient.',
   [AnalysisJobFailureCode.MAX_ATTEMPTS_EXCEEDED]:
     'The maximum number of attempts was exceeded.',
+  [AnalysisJobFailureCode.NO_ANALYZABLE_DATA]:
+    'No analyzable repository activity was found.',
   [AnalysisJobFailureCode.PUBLISH_FAILED]:
     'The analysis job could not be published.',
   [AnalysisJobFailureCode.REPOSITORY_UNAVAILABLE]:
@@ -104,6 +107,7 @@ export type TransitionAnalysisJobInput =
       expectedLeaseToken: string;
       expectedUserId: number;
       expectedRepositoryId: number;
+      expectedReservedTokens: number;
       data: TokenSettlementInput & { reportId: number };
     }
   | {
@@ -117,8 +121,20 @@ export type TransitionAnalysisJobInput =
       fromStatus: typeof AnalysisJobStatus.RUNNING;
       toStatus: typeof AnalysisJobStatus.FAILED;
       expectedLeaseToken: string;
+      expectedUserId: number;
+      expectedRepositoryId: number;
+      expectedReservedTokens: number | null;
       data: FailureInput;
     };
+
+export interface ReserveAnalysisJobTokensInput {
+  jobId: string;
+  expectedLeaseToken: string;
+  expectedUserId: number;
+  expectedRepositoryId: number;
+  estimatedTokens: number;
+  reservedTokens: number;
+}
 
 export class InvalidAnalysisJobInputError extends Error {
   constructor(message: string) {
@@ -209,6 +225,34 @@ export class AnalysisJobService {
 
     if (!transitioned) {
       throw new StaleAnalysisJobTransitionError(input.jobId, input.fromStatus);
+    }
+  }
+
+  async reserveTokens(
+    input: ReserveAnalysisJobTokensInput,
+    database: AnalysisJobDatabase,
+  ): Promise<void> {
+    this.assertNonEmptyString(input.jobId, 'jobId');
+    this.assertNonEmptyString(input.expectedLeaseToken, 'expectedLeaseToken');
+    this.assertPositiveInteger(input.expectedUserId, 'expectedUserId');
+    this.assertPositiveInteger(
+      input.expectedRepositoryId,
+      'expectedRepositoryId',
+    );
+    this.assertTokenCount(input.estimatedTokens, 'estimatedTokens');
+    this.assertTokenCount(input.reservedTokens, 'reservedTokens');
+    if (input.reservedTokens < input.estimatedTokens) {
+      throw new InvalidAnalysisJobInputError(
+        'reservedTokens must be greater than or equal to estimatedTokens',
+      );
+    }
+
+    const reserved = await this.repository.reserveTokens(input, database);
+    if (!reserved) {
+      throw new StaleAnalysisJobTransitionError(
+        input.jobId,
+        AnalysisJobStatus.RUNNING,
+      );
     }
   }
 
@@ -303,6 +347,10 @@ export class AnalysisJobService {
           'expectedRepositoryId must be a positive integer',
         );
       }
+      this.assertTokenCount(
+        input.expectedReservedTokens,
+        'expectedReservedTokens',
+      );
       return;
     }
 
@@ -311,6 +359,19 @@ export class AnalysisJobService {
       throw new InvalidAnalysisJobInputError(
         'errorRetryable must be a boolean',
       );
+    }
+    if (input.fromStatus === AnalysisJobStatus.RUNNING) {
+      this.assertPositiveInteger(input.expectedUserId, 'expectedUserId');
+      this.assertPositiveInteger(
+        input.expectedRepositoryId,
+        'expectedRepositoryId',
+      );
+      if (input.expectedReservedTokens !== null) {
+        this.assertTokenCount(
+          input.expectedReservedTokens,
+          'expectedReservedTokens',
+        );
+      }
     }
   }
 
@@ -341,6 +402,14 @@ export class AnalysisJobService {
     if (!Number.isSafeInteger(value) || value < 0) {
       throw new InvalidAnalysisJobInputError(
         `${field} must be a non-negative safe integer`,
+      );
+    }
+  }
+
+  private assertPositiveInteger(value: number, field: string): void {
+    if (!Number.isInteger(value) || value <= 0) {
+      throw new InvalidAnalysisJobInputError(
+        `${field} must be a positive integer`,
       );
     }
   }
@@ -427,6 +496,7 @@ export class AnalysisJobService {
         requiredReportId: input.data.reportId,
         requiredUserId: input.expectedUserId,
         requiredRepositoryId: input.expectedRepositoryId,
+        requiredReservedTokens: input.expectedReservedTokens,
         data: terminalData,
       };
     }
@@ -444,6 +514,9 @@ export class AnalysisJobService {
         fromStatus: input.fromStatus,
         toStatus: input.toStatus,
         expectedLeaseToken: input.expectedLeaseToken,
+        requiredUserId: input.expectedUserId,
+        requiredRepositoryId: input.expectedRepositoryId,
+        requiredReservedTokens: input.expectedReservedTokens,
         data: failureData,
       };
     }

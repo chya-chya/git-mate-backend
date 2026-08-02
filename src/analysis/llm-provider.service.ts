@@ -4,6 +4,8 @@ import OpenAI from 'openai';
 import { getEncoding } from 'js-tiktoken';
 import { CollectedDataDto } from '../collection/types/github-api.types';
 
+export const MAX_ANALYSIS_COMPLETION_TOKENS = 8192;
+
 export interface MetricEvaluation {
   score: number;
   reason: string;
@@ -31,6 +33,11 @@ export interface LlmAnalysisResponse {
     totalTokens: number;
   };
 }
+
+type AnalysisMessage = {
+  role: 'system' | 'user';
+  content: string;
+};
 
 @Injectable()
 export class LlmProviderService {
@@ -118,7 +125,7 @@ JSON 이스케이프 규칙을 철저히 준수하세요. 문자열 내에 쌍�
       '\n\n**중요:** 모든 분석 근거(reason)와 요약(summary)은 반드시 **한국어**로 작성하세요.';
 
     try {
-      const messages: any[] = [
+      const messages: AnalysisMessage[] = [
         {
           role: 'system',
           content: systemPrompt + languageInstruction,
@@ -139,7 +146,8 @@ JSON 이스케이프 규칙을 철저히 준수하세요. 문자열 내에 쌍�
 
       const response = await this.openai.chat.completions.create({
         model: 'gpt-5-mini', // 최신 모델 사용 권장
-        messages: messages,
+        messages,
+        max_completion_tokens: MAX_ANALYSIS_COMPLETION_TOKENS,
         // temperature: 0, // 결과의 일관성 및 재현성을 위해 0으로 설정
         response_format: { type: 'json_object' },
       });
@@ -179,7 +187,7 @@ JSON 이스케이프 규칙을 철저히 준수하세요. 문자열 내에 쌍�
     const languageInstruction =
       '\n\n**중요:** 모든 분석 근거(reason)와 요약(summary)은 반드시 **한국어**로 작성하세요.';
 
-    const messages: any[] = [
+    const messages: AnalysisMessage[] = [
       {
         role: 'system',
         content: systemPrompt + languageInstruction,
@@ -193,14 +201,25 @@ JSON 이스케이프 규칙을 철저히 준수하세요. 문자열 내에 쌍�
     return this.getEstimatedTokenCount(messages);
   }
 
-  private getEstimatedTokenCount(messages: any[]): number {
+  estimateTokenReservationForData(data: CollectedDataDto): {
+    estimatedTokens: number;
+    reservedTokens: number;
+  } {
+    const estimatedTokens = this.estimateTokensForData(data);
+    return {
+      estimatedTokens,
+      reservedTokens: estimatedTokens + MAX_ANALYSIS_COMPLETION_TOKENS,
+    };
+  }
+
+  private getEstimatedTokenCount(messages: readonly AnalysisMessage[]): number {
     try {
       const encoding = getEncoding('cl100k_base');
       let totalTokens = 0;
 
       for (const message of messages) {
         totalTokens += 4;
-        totalTokens += encoding.encode(message.content || '').length;
+        totalTokens += encoding.encode(message.content).length;
       }
       totalTokens += 3;
 

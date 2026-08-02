@@ -43,8 +43,17 @@ export type AnalysisJobDatabase = Pick<Prisma.TransactionClient, 'analysisJob'>;
 
 export type RunningAnalysisJobContext = Pick<
   AnalysisJob,
-  'id' | 'userId' | 'repositoryId'
+  'id' | 'userId' | 'repositoryId' | 'reservedTokens'
 >;
+
+export interface ReserveAnalysisJobTokensRecordInput {
+  jobId: string;
+  expectedLeaseToken: string;
+  expectedUserId: number;
+  expectedRepositoryId: number;
+  estimatedTokens: number;
+  reservedTokens: number;
+}
 
 interface TransitionAnalysisJobRecordBase {
   jobId: string;
@@ -52,6 +61,7 @@ interface TransitionAnalysisJobRecordBase {
   requiredReportId?: number;
   requiredUserId?: number;
   requiredRepositoryId?: number;
+  requiredReservedTokens?: number | null;
   data: AnalysisJobTransitionData;
 }
 
@@ -63,16 +73,25 @@ export type TransitionAnalysisJobRecordInput =
       requiredReportId: number;
       requiredUserId: number;
       requiredRepositoryId: number;
+      requiredReservedTokens: number;
     })
   | (TransitionAnalysisJobRecordBase & {
       fromStatus: typeof AnalysisJobStatus.RUNNING;
-      toStatus:
-        | typeof AnalysisJobStatus.QUEUED
-        | typeof AnalysisJobStatus.FAILED;
+      toStatus: typeof AnalysisJobStatus.QUEUED;
       expectedLeaseToken: string;
       requiredReportId?: never;
       requiredUserId?: never;
       requiredRepositoryId?: never;
+      requiredReservedTokens?: never;
+    })
+  | (TransitionAnalysisJobRecordBase & {
+      fromStatus: typeof AnalysisJobStatus.RUNNING;
+      toStatus: typeof AnalysisJobStatus.FAILED;
+      expectedLeaseToken: string;
+      requiredReportId?: never;
+      requiredUserId: number;
+      requiredRepositoryId: number;
+      requiredReservedTokens: number | null;
     })
   | (TransitionAnalysisJobRecordBase & {
       fromStatus: typeof AnalysisJobStatus.QUEUED;
@@ -83,6 +102,7 @@ export type TransitionAnalysisJobRecordInput =
       requiredReportId?: never;
       requiredUserId?: never;
       requiredRepositoryId?: never;
+      requiredReservedTokens?: never;
     });
 
 @Injectable()
@@ -118,8 +138,32 @@ export class AnalysisJobRepository {
         id: true,
         userId: true,
         repositoryId: true,
+        reservedTokens: true,
       },
     });
+  }
+
+  async reserveTokens(
+    input: ReserveAnalysisJobTokensRecordInput,
+    database: AnalysisJobDatabase = this.prisma,
+  ): Promise<boolean> {
+    const result = await database.analysisJob.updateMany({
+      where: {
+        id: input.jobId,
+        status: AnalysisJobStatus.RUNNING,
+        leaseToken: input.expectedLeaseToken,
+        userId: input.expectedUserId,
+        repositoryId: input.expectedRepositoryId,
+        reservedTokens: null,
+        tokensSettledAt: null,
+      },
+      data: {
+        stage: AnalysisJobStage.ANALYZING,
+        estimatedTokens: input.estimatedTokens,
+        reservedTokens: input.reservedTokens,
+      },
+    });
+    return result.count === 1;
   }
 
   async transitionStatus(
@@ -163,6 +207,13 @@ export class AnalysisJobRepository {
         ...(input.requiredRepositoryId === undefined
           ? {}
           : { repositoryId: input.requiredRepositoryId }),
+        ...(input.requiredReservedTokens === undefined
+          ? {}
+          : { reservedTokens: input.requiredReservedTokens }),
+        ...(input.toStatus === AnalysisJobStatus.SUCCEEDED ||
+        input.toStatus === AnalysisJobStatus.FAILED
+          ? { tokensSettledAt: null }
+          : {}),
       },
       data: {
         ...input.data,

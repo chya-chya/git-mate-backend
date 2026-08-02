@@ -19,6 +19,7 @@ describe('AnalysisJobService', () => {
     create: jest.fn(),
     findById: jest.fn(),
     findRunningByLease: jest.fn(),
+    reserveTokens: jest.fn(),
     transitionStatus: jest.fn(),
   };
   const service = new AnalysisJobService(
@@ -105,11 +106,17 @@ describe('AnalysisJobService', () => {
       id: 'job-1',
       userId: 7,
       repositoryId: 9,
+      reservedTokens: null,
     });
 
     await expect(
       service.getRunningJobContext('job-1', 'lease-1'),
-    ).resolves.toEqual({ id: 'job-1', userId: 7, repositoryId: 9 });
+    ).resolves.toEqual({
+      id: 'job-1',
+      userId: 7,
+      repositoryId: 9,
+      reservedTokens: null,
+    });
     expect(repository.findRunningByLease).toHaveBeenCalledWith(
       'job-1',
       'lease-1',
@@ -124,6 +131,23 @@ describe('AnalysisJobService', () => {
     ).rejects.toBeInstanceOf(StaleAnalysisJobTransitionError);
   });
 
+  it('records a validated token reservation with the transaction client', async () => {
+    repository.reserveTokens.mockResolvedValue(true);
+    const database = { analysisJob: {} } as unknown as AnalysisJobDatabase;
+    const input = {
+      jobId: 'job-1',
+      expectedLeaseToken: 'lease-1',
+      expectedUserId: 7,
+      expectedRepositoryId: 9,
+      estimatedTokens: 10,
+      reservedTokens: 20,
+    };
+
+    await service.reserveTokens(input, database);
+
+    expect(repository.reserveTokens).toHaveBeenCalledWith(input, database);
+  });
+
   it('persists a successful terminal transition with its lease and report fences', async () => {
     repository.transitionStatus.mockResolvedValue(true);
     const database = { analysisJob: {} } as unknown as AnalysisJobDatabase;
@@ -136,6 +160,7 @@ describe('AnalysisJobService', () => {
         expectedLeaseToken: 'lease-1',
         expectedUserId: 7,
         expectedRepositoryId: 9,
+        expectedReservedTokens: 20,
         data: { ...settlement, reportId: 3 },
       },
       database,
@@ -150,6 +175,7 @@ describe('AnalysisJobService', () => {
         requiredReportId: 3,
         requiredUserId: 7,
         requiredRepositoryId: 9,
+        requiredReservedTokens: 20,
         data: {
           stage: null,
           progress: 100,
@@ -169,6 +195,9 @@ describe('AnalysisJobService', () => {
       fromStatus: AnalysisJobStatus.RUNNING,
       toStatus: AnalysisJobStatus.FAILED,
       expectedLeaseToken: 'lease-1',
+      expectedUserId: 7,
+      expectedRepositoryId: 9,
+      expectedReservedTokens: 20,
       data: {
         completedAt,
         tokensSettledAt,
@@ -211,6 +240,9 @@ describe('AnalysisJobService', () => {
       fromStatus: AnalysisJobStatus.RUNNING,
       toStatus: AnalysisJobStatus.FAILED,
       expectedLeaseToken: 'lease-1',
+      expectedUserId: 7,
+      expectedRepositoryId: 9,
+      expectedReservedTokens: 20,
       data: {
         ...settlement,
         errorCode: AnalysisJobFailureCode.ANALYSIS_FAILED,

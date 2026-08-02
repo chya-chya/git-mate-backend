@@ -35,6 +35,7 @@ describe('AnalysisJobRepository', () => {
           requiredReportId: 3,
           requiredUserId: 7,
           requiredRepositoryId: 9,
+          requiredReservedTokens: 20,
           data: { progress: 100 },
         },
         transaction as never,
@@ -49,6 +50,8 @@ describe('AnalysisJobRepository', () => {
         report: { is: { id: 3 } },
         userId: 7,
         repositoryId: 9,
+        reservedTokens: 20,
+        tokensSettledAt: null,
       },
       data: {
         progress: 100,
@@ -63,6 +66,7 @@ describe('AnalysisJobRepository', () => {
       id: 'job-1',
       userId: 7,
       repositoryId: 9,
+      reservedTokens: null,
     });
 
     await repository.findRunningByLease('job-1', 'lease-1');
@@ -73,7 +77,44 @@ describe('AnalysisJobRepository', () => {
         status: AnalysisJobStatus.RUNNING,
         leaseToken: 'lease-1',
       },
-      select: { id: true, userId: true, repositoryId: true },
+      select: {
+        id: true,
+        userId: true,
+        repositoryId: true,
+        reservedTokens: true,
+      },
+    });
+  });
+
+  it('records a reservation only for the matching unsettled lease', async () => {
+    prisma.analysisJob.updateMany.mockResolvedValue({ count: 1 });
+
+    await expect(
+      repository.reserveTokens({
+        jobId: 'job-1',
+        expectedLeaseToken: 'lease-1',
+        expectedUserId: 7,
+        expectedRepositoryId: 9,
+        estimatedTokens: 10,
+        reservedTokens: 20,
+      }),
+    ).resolves.toBe(true);
+
+    expect(prisma.analysisJob.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: 'job-1',
+        status: AnalysisJobStatus.RUNNING,
+        leaseToken: 'lease-1',
+        userId: 7,
+        repositoryId: 9,
+        reservedTokens: null,
+        tokensSettledAt: null,
+      },
+      data: {
+        stage: 'ANALYZING',
+        estimatedTokens: 10,
+        reservedTokens: 20,
+      },
     });
   });
 
