@@ -139,6 +139,18 @@ export interface ReserveAnalysisJobTokensInput {
   reservedTokens: number;
 }
 
+export interface RecordAnalysisJobProviderChargeInput {
+  jobId: string;
+  expectedLeaseToken: string;
+  expectedUserId: number;
+  expectedRepositoryId: number;
+  expectedReservedTokens: number;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  providerRequestId: string;
+}
+
 export class InvalidAnalysisJobInputError extends Error {
   constructor(message: string) {
     super(message);
@@ -252,6 +264,43 @@ export class AnalysisJobService {
 
     const reserved = await this.repository.reserveTokens(input, database);
     if (!reserved) {
+      throw new StaleAnalysisJobTransitionError(
+        input.jobId,
+        AnalysisJobStatus.RUNNING,
+      );
+    }
+  }
+
+  async recordProviderCharge(
+    input: RecordAnalysisJobProviderChargeInput,
+    database?: AnalysisJobDatabase,
+  ): Promise<void> {
+    this.assertNonEmptyString(input.jobId, 'jobId');
+    this.assertNonEmptyString(input.expectedLeaseToken, 'expectedLeaseToken');
+    this.assertPositiveInteger(input.expectedUserId, 'expectedUserId');
+    this.assertPositiveInteger(
+      input.expectedRepositoryId,
+      'expectedRepositoryId',
+    );
+    this.assertTokenCount(
+      input.expectedReservedTokens,
+      'expectedReservedTokens',
+    );
+    this.assertTokenCount(input.promptTokens, 'promptTokens');
+    this.assertTokenCount(input.completionTokens, 'completionTokens');
+    this.assertTokenCount(input.totalTokens, 'totalTokens');
+    if (input.promptTokens + input.completionTokens !== input.totalTokens) {
+      throw new InvalidAnalysisJobInputError(
+        'totalTokens must equal promptTokens plus completionTokens',
+      );
+    }
+    this.assertProviderRequestIds([input.providerRequestId]);
+
+    const recorded = await this.repository.recordProviderCharge(
+      input,
+      database,
+    );
+    if (!recorded) {
       throw new StaleAnalysisJobTransitionError(
         input.jobId,
         AnalysisJobStatus.RUNNING,
@@ -390,10 +439,14 @@ export class AnalysisJobService {
         'totalTokens must equal promptTokens plus completionTokens',
       );
     }
+    this.assertProviderRequestIds(input.providerRequestIds);
+  }
+
+  private assertProviderRequestIds(providerRequestIds: string[]): void {
     if (
-      !Array.isArray(input.providerRequestIds) ||
-      input.providerRequestIds.length > MAX_PROVIDER_REQUEST_IDS ||
-      input.providerRequestIds.some(
+      !Array.isArray(providerRequestIds) ||
+      providerRequestIds.length > MAX_PROVIDER_REQUEST_IDS ||
+      providerRequestIds.some(
         (requestId) => !PROVIDER_REQUEST_ID_PATTERN.test(requestId),
       )
     ) {

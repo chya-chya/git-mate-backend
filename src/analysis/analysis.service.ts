@@ -58,6 +58,21 @@ export class AnalysisTokenBudgetExceededError extends Error {
   }
 }
 
+export class PostBillingAnalysisPersistenceError extends Error {
+  readonly retryable = false;
+
+  constructor(
+    readonly jobId: string,
+    readonly providerRequestId: string,
+    readonly usage: AnalysisTokenUsage,
+  ) {
+    super(
+      'Billed analysis metadata could not be persisted for reconciliation.',
+    );
+    this.name = PostBillingAnalysisPersistenceError.name;
+  }
+}
+
 @Injectable()
 export class AnalysisService {
   private readonly logger = new Logger(AnalysisService.name);
@@ -90,10 +105,27 @@ export class AnalysisService {
       jobContext.jobId,
       jobContext.leaseToken,
     );
-    return this.executeAnalysis(job.userId, job.repositoryId, data, {
+    const resolvedContext = {
       ...jobContext,
       reservedTokens: job.reservedTokens,
-    });
+    };
+    const providerCheckpoint = this.getProviderChargeCheckpoint(job);
+    if (providerCheckpoint !== null) {
+      return this.terminateProviderReconciliation(
+        job.userId,
+        job.repositoryId,
+        resolvedContext,
+        job.reservedTokens,
+        providerCheckpoint.providerRequestId,
+        providerCheckpoint.usage,
+      );
+    }
+    return this.executeAnalysis(
+      job.userId,
+      job.repositoryId,
+      data,
+      resolvedContext,
+    );
   }
 
   private async executeAnalysis(
@@ -219,6 +251,35 @@ export class AnalysisService {
         }
         throw error;
       }
+      if (jobContext !== undefined) {
+        if (reservedTokens === null) {
+          throw new InvalidAnalysisTokenUsageError();
+        }
+        try {
+          await this.analysisJobService.recordProviderCharge({
+            jobId: jobContext.jobId,
+            expectedLeaseToken: jobContext.leaseToken,
+            expectedUserId: userId,
+            expectedRepositoryId: repositoryId,
+            expectedReservedTokens: reservedTokens,
+            promptTokens: usage.promptTokens,
+            completionTokens: usage.completionTokens,
+            totalTokens: usage.totalTokens,
+            providerRequestId,
+          });
+        } catch (error) {
+          await this.handlePostBillingPersistenceFailure(
+            userId,
+            repositoryId,
+            jobContext,
+            reservedTokens,
+            providerRequestId,
+            usage,
+            error,
+          );
+          return;
+        }
+      }
       if (
         jobContext !== undefined &&
         reservedTokens !== null &&
@@ -256,78 +317,94 @@ export class AnalysisService {
       }
 
       // 5. Save Report, Update Stats, and Deduct Tokens in a Transaction
-      await this.prisma.$transaction(async (tx) => {
-        // A. Save Report
-        const report = await tx.analysisReport.create({
-          data: {
-            userId,
-            repositoryId,
-            metrics: llmResult as unknown as Prisma.InputJsonValue,
-            ...(jobContext === undefined ? {} : { jobId: jobContext.jobId }),
-          },
-        });
-
-        // B. Update User Stats
-        await this.statService.updateStats(userId, metrics, tx);
-
-        // C. Deduct Tokens
-        if (reservedTokens === null) {
-          const tokenSettlement = await tx.user.updateMany({
-            where: {
-              id: userId,
-              availableTokens: { gte: usage.totalTokens },
-            },
+      try {
+        await this.prisma.$transaction(async (tx) => {
+          // A. Save Report
+          const report = await tx.analysisReport.create({
             data: {
-              availableTokens: {
-                decrement: usage.totalTokens,
-              },
+              userId,
+              repositoryId,
+              metrics: llmResult as unknown as Prisma.InputJsonValue,
+              ...(jobContext === undefined ? {} : { jobId: jobContext.jobId }),
             },
           });
-          if (tokenSettlement.count !== 1) {
-            throw new InsufficientAnalysisTokensError();
-          }
-        } else {
-          const refundTokens = reservedTokens - usage.totalTokens;
-          if (refundTokens > 0) {
-            await tx.user.update({
-              where: { id: userId },
-              data: { availableTokens: { increment: refundTokens } },
-            });
-          }
-        }
 
-        if (jobContext !== undefined) {
+          // B. Update User Stats
+          await this.statService.updateStats(userId, metrics, tx);
+
+          // C. Deduct Tokens
           if (reservedTokens === null) {
-            throw new InvalidAnalysisTokenUsageError();
-          }
-          const completedAt = new Date();
-          await this.analysisJobService.transition(
-            {
-              jobId: jobContext.jobId,
-              fromStatus: AnalysisJobStatus.RUNNING,
-              toStatus: AnalysisJobStatus.SUCCEEDED,
-              expectedLeaseToken: jobContext.leaseToken,
-              expectedUserId: userId,
-              expectedRepositoryId: repositoryId,
-              expectedReservedTokens: reservedTokens,
-              data: {
-                reportId: report.id,
-                completedAt,
-                tokensSettledAt: completedAt,
-                promptTokens: usage.promptTokens,
-                completionTokens: usage.completionTokens,
-                totalTokens: usage.totalTokens,
-                providerRequestIds: [providerRequestId],
+            const tokenSettlement = await tx.user.updateMany({
+              where: {
+                id: userId,
+                availableTokens: { gte: usage.totalTokens },
               },
-            },
-            tx,
-          );
-        }
+              data: {
+                availableTokens: {
+                  decrement: usage.totalTokens,
+                },
+              },
+            });
+            if (tokenSettlement.count !== 1) {
+              throw new InsufficientAnalysisTokensError();
+            }
+          } else {
+            const refundTokens = reservedTokens - usage.totalTokens;
+            if (refundTokens > 0) {
+              await tx.user.update({
+                where: { id: userId },
+                data: { availableTokens: { increment: refundTokens } },
+              });
+            }
+          }
 
-        this.logger.log(
-          `Deducted ${usage.totalTokens} tokens from User ${userId}.`,
-        );
-      });
+          if (jobContext !== undefined) {
+            if (reservedTokens === null) {
+              throw new InvalidAnalysisTokenUsageError();
+            }
+            const completedAt = new Date();
+            await this.analysisJobService.transition(
+              {
+                jobId: jobContext.jobId,
+                fromStatus: AnalysisJobStatus.RUNNING,
+                toStatus: AnalysisJobStatus.SUCCEEDED,
+                expectedLeaseToken: jobContext.leaseToken,
+                expectedUserId: userId,
+                expectedRepositoryId: repositoryId,
+                expectedReservedTokens: reservedTokens,
+                data: {
+                  reportId: report.id,
+                  completedAt,
+                  tokensSettledAt: completedAt,
+                  promptTokens: usage.promptTokens,
+                  completionTokens: usage.completionTokens,
+                  totalTokens: usage.totalTokens,
+                  providerRequestIds: [providerRequestId],
+                },
+              },
+              tx,
+            );
+          }
+
+          this.logger.log(
+            `Deducted ${usage.totalTokens} tokens from User ${userId}.`,
+          );
+        });
+      } catch (error) {
+        if (jobContext !== undefined && reservedTokens !== null) {
+          await this.handlePostBillingPersistenceFailure(
+            userId,
+            repositoryId,
+            jobContext,
+            reservedTokens,
+            providerRequestId,
+            usage,
+            error,
+          );
+          return;
+        }
+        throw error;
+      }
 
       this.logger.log('Analysis completed successfully.');
       return metrics;
@@ -443,6 +520,88 @@ export class AnalysisService {
       refundTokens,
       providerRequestId === null ? [] : [providerRequestId],
     );
+  }
+
+  private async handlePostBillingPersistenceFailure(
+    userId: number,
+    repositoryId: number,
+    jobContext: ResolvedAnalysisJobExecutionContext,
+    reservedTokens: number,
+    providerRequestId: string,
+    usage: AnalysisTokenUsage,
+    originalError: unknown,
+  ): Promise<void> {
+    try {
+      await this.terminateProviderReconciliation(
+        userId,
+        repositoryId,
+        jobContext,
+        reservedTokens,
+        providerRequestId,
+        usage,
+      );
+    } catch (reconciliationError) {
+      this.logger.error({
+        event: 'analysis_provider_reconciliation_persistence_failed',
+        jobId: jobContext.jobId,
+        providerRequestId,
+        promptTokens: usage.promptTokens,
+        completionTokens: usage.completionTokens,
+        totalTokens: usage.totalTokens,
+        retryable: false,
+        originalErrorName: this.getErrorName(originalError),
+        reconciliationErrorName: this.getErrorName(reconciliationError),
+      });
+      throw new PostBillingAnalysisPersistenceError(
+        jobContext.jobId,
+        providerRequestId,
+        usage,
+      );
+    }
+  }
+
+  private getProviderChargeCheckpoint(job: {
+    promptTokens: number | null;
+    completionTokens: number | null;
+    totalTokens: number | null;
+    providerRequestIds: string[];
+  }): {
+    providerRequestId: string | null;
+    usage: AnalysisTokenUsage | null;
+  } | null {
+    const hasCheckpoint =
+      job.providerRequestIds.length > 0 ||
+      job.promptTokens !== null ||
+      job.completionTokens !== null ||
+      job.totalTokens !== null;
+    if (!hasCheckpoint) {
+      return null;
+    }
+
+    const providerRequestId =
+      job.providerRequestIds.length === 1 ? job.providerRequestIds[0] : null;
+    if (
+      job.promptTokens === null ||
+      job.completionTokens === null ||
+      job.totalTokens === null
+    ) {
+      return { providerRequestId, usage: null };
+    }
+    const usage = {
+      promptTokens: job.promptTokens,
+      completionTokens: job.completionTokens,
+      totalTokens: job.totalTokens,
+    };
+    try {
+      this.assertValidTokenUsage(usage);
+      return { providerRequestId, usage };
+    } catch {
+      return { providerRequestId, usage: null };
+    }
+  }
+
+  private getErrorName(error: unknown): string {
+    return error instanceof Error ? error.name : 'UnknownError';
   }
 
   private assertValidReservation(reservation: {

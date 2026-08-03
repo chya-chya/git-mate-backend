@@ -67,6 +67,10 @@ describe('AnalysisJobRepository', () => {
       userId: 7,
       repositoryId: 9,
       reservedTokens: null,
+      promptTokens: null,
+      completionTokens: null,
+      totalTokens: null,
+      providerRequestIds: [],
     });
 
     await repository.findRunningByLease('job-1', 'lease-1');
@@ -82,6 +86,10 @@ describe('AnalysisJobRepository', () => {
         userId: true,
         repositoryId: true,
         reservedTokens: true,
+        promptTokens: true,
+        completionTokens: true,
+        totalTokens: true,
+        providerRequestIds: true,
       },
     });
   });
@@ -114,6 +122,46 @@ describe('AnalysisJobRepository', () => {
         stage: 'ANALYZING',
         estimatedTokens: 10,
         reservedTokens: 20,
+      },
+    });
+  });
+
+  it('checkpoints a provider charge only once for the matching lease', async () => {
+    prisma.analysisJob.updateMany.mockResolvedValue({ count: 1 });
+
+    await expect(
+      repository.recordProviderCharge({
+        jobId: 'job-1',
+        expectedLeaseToken: 'lease-1',
+        expectedUserId: 7,
+        expectedRepositoryId: 9,
+        expectedReservedTokens: 20,
+        promptTokens: 10,
+        completionTokens: 5,
+        totalTokens: 15,
+        providerRequestId: 'chatcmpl_actual_123',
+      }),
+    ).resolves.toBe(true);
+
+    expect(prisma.analysisJob.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: 'job-1',
+        status: AnalysisJobStatus.RUNNING,
+        leaseToken: 'lease-1',
+        userId: 7,
+        repositoryId: 9,
+        reservedTokens: 20,
+        tokensSettledAt: null,
+        promptTokens: null,
+        completionTokens: null,
+        totalTokens: null,
+        providerRequestIds: { isEmpty: true },
+      },
+      data: {
+        promptTokens: 10,
+        completionTokens: 5,
+        totalTokens: 15,
+        providerRequestIds: ['chatcmpl_actual_123'],
       },
     });
   });

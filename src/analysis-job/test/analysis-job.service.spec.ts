@@ -20,6 +20,7 @@ describe('AnalysisJobService', () => {
     findById: jest.fn(),
     findRunningByLease: jest.fn(),
     reserveTokens: jest.fn(),
+    recordProviderCharge: jest.fn(),
     transitionStatus: jest.fn(),
   };
   const service = new AnalysisJobService(
@@ -107,6 +108,10 @@ describe('AnalysisJobService', () => {
       userId: 7,
       repositoryId: 9,
       reservedTokens: null,
+      promptTokens: null,
+      completionTokens: null,
+      totalTokens: null,
+      providerRequestIds: [],
     });
 
     await expect(
@@ -116,6 +121,10 @@ describe('AnalysisJobService', () => {
       userId: 7,
       repositoryId: 9,
       reservedTokens: null,
+      promptTokens: null,
+      completionTokens: null,
+      totalTokens: null,
+      providerRequestIds: [],
     });
     expect(repository.findRunningByLease).toHaveBeenCalledWith(
       'job-1',
@@ -146,6 +155,28 @@ describe('AnalysisJobService', () => {
     await service.reserveTokens(input, database);
 
     expect(repository.reserveTokens).toHaveBeenCalledWith(input, database);
+  });
+
+  it('records validated provider billing metadata as a lease-fenced checkpoint', async () => {
+    repository.recordProviderCharge.mockResolvedValue(true);
+    const input = {
+      jobId: 'job-1',
+      expectedLeaseToken: 'lease-1',
+      expectedUserId: 7,
+      expectedRepositoryId: 9,
+      expectedReservedTokens: 20,
+      promptTokens: 10,
+      completionTokens: 5,
+      totalTokens: 15,
+      providerRequestId: 'chatcmpl_actual_123',
+    };
+
+    await service.recordProviderCharge(input);
+
+    expect(repository.recordProviderCharge).toHaveBeenCalledWith(
+      input,
+      undefined,
+    );
   });
 
   it('persists a successful terminal transition with its lease and report fences', async () => {

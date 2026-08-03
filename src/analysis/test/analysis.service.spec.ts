@@ -1,6 +1,9 @@
 import { AnalysisJobService } from '../../analysis-job/analysis-job.service';
 import { PrismaService } from '../../prisma/prisma.service';
-import { AnalysisService } from '../analysis.service';
+import {
+  AnalysisService,
+  PostBillingAnalysisPersistenceError,
+} from '../analysis.service';
 import {
   LlmProviderReconciliationError,
   LlmProviderService,
@@ -26,12 +29,22 @@ describe('AnalysisService', () => {
   function createFixture(options?: {
     availableTokens?: number;
     analyzeError?: Error;
+    providerCheckpoint?: {
+      providerRequestId: string;
+      promptTokens: number;
+      completionTokens: number;
+      totalTokens: number;
+    };
     pullRequests?: unknown[];
+    reportError?: Error;
     reservedTokens?: number | null;
     tokenUpdateCount?: number;
   }) {
+    const reportCreate = options?.reportError
+      ? jest.fn().mockRejectedValue(options.reportError)
+      : jest.fn().mockResolvedValue({ id: 31 });
     const transaction = {
-      analysisReport: { create: jest.fn().mockResolvedValue({ id: 31 }) },
+      analysisReport: { create: reportCreate },
       user: {
         updateMany: jest
           .fn()
@@ -79,8 +92,16 @@ describe('AnalysisService', () => {
         userId: 7,
         repositoryId: 9,
         reservedTokens: options?.reservedTokens ?? null,
+        promptTokens: options?.providerCheckpoint?.promptTokens ?? null,
+        completionTokens: options?.providerCheckpoint?.completionTokens ?? null,
+        totalTokens: options?.providerCheckpoint?.totalTokens ?? null,
+        providerRequestIds:
+          options?.providerCheckpoint === undefined
+            ? []
+            : [options.providerCheckpoint.providerRequestId],
       }),
       reserveTokens: jest.fn().mockResolvedValue({}),
+      recordProviderCharge: jest.fn().mockResolvedValue({}),
       transition: jest.fn().mockResolvedValue({}),
     };
     const service = new AnalysisService(
@@ -158,6 +179,17 @@ describe('AnalysisService', () => {
       },
       transaction,
     );
+    expect(analysisJobService.recordProviderCharge).toHaveBeenCalledWith({
+      jobId: 'job-1',
+      expectedLeaseToken: 'lease-1',
+      expectedUserId: 7,
+      expectedRepositoryId: 9,
+      expectedReservedTokens: 20,
+      promptTokens: 10,
+      completionTokens: 5,
+      totalTokens: 15,
+      providerRequestId: 'chatcmpl_actual_123',
+    });
     expect(transaction.user.update).toHaveBeenCalledWith({
       where: { id: 7 },
       data: { availableTokens: { increment: 5 } },
@@ -191,13 +223,16 @@ describe('AnalysisService', () => {
     const reservationCall =
       analysisJobService.reserveTokens.mock.invocationCallOrder[0];
     const llmCall = llmProvider.analyze.mock.invocationCallOrder[0];
+    const checkpointCall =
+      analysisJobService.recordProviderCharge.mock.invocationCallOrder[0];
     const reportCall =
       transaction.analysisReport.create.mock.invocationCallOrder[0];
     const refundCall = transaction.user.update.mock.invocationCallOrder[0];
     const casCall = analysisJobService.transition.mock.invocationCallOrder[0];
     expect(debitCall).toBeLessThan(reservationCall);
     expect(reservationCall).toBeLessThan(llmCall);
-    expect(llmCall).toBeLessThan(reportCall);
+    expect(llmCall).toBeLessThan(checkpointCall);
+    expect(checkpointCall).toBeLessThan(reportCall);
     expect(reportCall).toBeLessThan(refundCall);
     expect(refundCall).toBeLessThan(casCall);
   });
@@ -215,6 +250,53 @@ describe('AnalysisService', () => {
       where: { id: 7 },
       data: { availableTokens: { increment: 5 } },
     });
+  });
+
+  it('does not call the LLM when a retry finds a durable provider checkpoint', async () => {
+    const { analysisJobService, llmProvider, service, transaction } =
+      createFixture({
+        reservedTokens: 20,
+        providerCheckpoint: {
+          providerRequestId: 'chatcmpl_checkpoint_123',
+          promptTokens: 10,
+          completionTokens: 5,
+          totalTokens: 15,
+        },
+      });
+
+    await service.runAnalysisJob({} as never, jobContext);
+
+    expect(llmProvider.analyze).not.toHaveBeenCalled();
+    expect(analysisJobService.recordProviderCharge).not.toHaveBeenCalled();
+    expect(transaction.user.update).toHaveBeenCalledWith({
+      where: { id: 7 },
+      data: { availableTokens: { increment: 5 } },
+    });
+    const transitionCalls = analysisJobService.transition.mock
+      .calls as unknown as Array<
+      [
+        {
+          toStatus: string;
+          data: {
+            errorCode: string;
+            errorRetryable: boolean;
+            providerRequestIds: string[];
+            totalTokens: number;
+          };
+        },
+        unknown,
+      ]
+    >;
+    expect(transitionCalls[0][0]).toMatchObject({
+      toStatus: 'FAILED',
+      data: {
+        errorCode: 'PROVIDER_RECONCILIATION_REQUIRED',
+        errorRetryable: false,
+        providerRequestIds: ['chatcmpl_checkpoint_123'],
+        totalTokens: 15,
+      },
+    });
+    expect(transitionCalls[0][1]).toBe(transaction);
   });
 
   it('does not call the LLM and terminates the Job when reservation fails', async () => {
@@ -353,17 +435,82 @@ describe('AnalysisService', () => {
     });
   });
 
-  it('propagates a stale success CAS so the worker transaction rolls back', async () => {
-    const { analysisJobService, service } = createFixture();
+  it('quarantines a billed response when final result persistence fails', async () => {
+    const { analysisJobService, service, transaction } = createFixture({
+      reservedTokens: 20,
+      reportError: new Error('database unavailable'),
+    });
+
+    await service.runAnalysisJob({} as never, jobContext);
+
+    expect(analysisJobService.recordProviderCharge).toHaveBeenCalled();
+    expect(transaction.user.update).toHaveBeenCalledWith({
+      where: { id: 7 },
+      data: { availableTokens: { increment: 5 } },
+    });
+    const transitionCalls = analysisJobService.transition.mock
+      .calls as unknown as Array<
+      [
+        {
+          toStatus: string;
+          data: {
+            errorCode: string;
+            errorRetryable: boolean;
+            providerRequestIds: string[];
+            totalTokens: number;
+          };
+        },
+        unknown,
+      ]
+    >;
+    expect(transitionCalls[0][0]).toMatchObject({
+      toStatus: 'FAILED',
+      data: {
+        errorCode: 'PROVIDER_RECONCILIATION_REQUIRED',
+        errorRetryable: false,
+        providerRequestIds: ['chatcmpl_actual_123'],
+        totalTokens: 15,
+      },
+    });
+    expect(transitionCalls[0][1]).toBe(transaction);
+  });
+
+  it('uses a separate reconciliation CAS after a stale success CAS', async () => {
+    const { analysisJobService, service } = createFixture({
+      reservedTokens: 20,
+    });
     analysisJobService.transition.mockRejectedValueOnce(
       new Error('stale lease'),
     );
 
+    await service.runAnalysisJob({} as never, jobContext);
+
+    expect(analysisJobService.transition).toHaveBeenCalledTimes(2);
+    const transitionCalls = analysisJobService.transition.mock
+      .calls as unknown as Array<
+      [{ toStatus: string; data: { errorCode?: string } }]
+    >;
+    expect(transitionCalls[0][0].toStatus).toBe('SUCCEEDED');
+    expect(transitionCalls[1][0]).toMatchObject({
+      toStatus: 'FAILED',
+      data: { errorCode: 'PROVIDER_RECONCILIATION_REQUIRED' },
+    });
+  });
+
+  it('returns a non-retryable structured error when reconciliation CAS is also stale', async () => {
+    const { analysisJobService, service } = createFixture({
+      reservedTokens: 20,
+    });
+    analysisJobService.transition.mockRejectedValue(new Error('stale lease'));
+
     await expect(
-      service.runAnalysisJob({} as never, {
-        ...jobContext,
-        leaseToken: 'stale-lease',
-      }),
-    ).rejects.toThrow('stale lease');
+      service.runAnalysisJob({} as never, jobContext),
+    ).rejects.toMatchObject({
+      name: PostBillingAnalysisPersistenceError.name,
+      retryable: false,
+      jobId: 'job-1',
+      providerRequestId: 'chatcmpl_actual_123',
+      usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+    });
   });
 });

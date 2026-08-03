@@ -43,7 +43,14 @@ export type AnalysisJobDatabase = Pick<Prisma.TransactionClient, 'analysisJob'>;
 
 export type RunningAnalysisJobContext = Pick<
   AnalysisJob,
-  'id' | 'userId' | 'repositoryId' | 'reservedTokens'
+  | 'id'
+  | 'userId'
+  | 'repositoryId'
+  | 'reservedTokens'
+  | 'promptTokens'
+  | 'completionTokens'
+  | 'totalTokens'
+  | 'providerRequestIds'
 >;
 
 export interface ReserveAnalysisJobTokensRecordInput {
@@ -53,6 +60,18 @@ export interface ReserveAnalysisJobTokensRecordInput {
   expectedRepositoryId: number;
   estimatedTokens: number;
   reservedTokens: number;
+}
+
+export interface RecordAnalysisJobProviderChargeInput {
+  jobId: string;
+  expectedLeaseToken: string;
+  expectedUserId: number;
+  expectedRepositoryId: number;
+  expectedReservedTokens: number;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  providerRequestId: string;
 }
 
 interface TransitionAnalysisJobRecordBase {
@@ -139,6 +158,10 @@ export class AnalysisJobRepository {
         userId: true,
         repositoryId: true,
         reservedTokens: true,
+        promptTokens: true,
+        completionTokens: true,
+        totalTokens: true,
+        providerRequestIds: true,
       },
     });
   }
@@ -161,6 +184,34 @@ export class AnalysisJobRepository {
         stage: AnalysisJobStage.ANALYZING,
         estimatedTokens: input.estimatedTokens,
         reservedTokens: input.reservedTokens,
+      },
+    });
+    return result.count === 1;
+  }
+
+  async recordProviderCharge(
+    input: RecordAnalysisJobProviderChargeInput,
+    database: AnalysisJobDatabase = this.prisma,
+  ): Promise<boolean> {
+    const result = await database.analysisJob.updateMany({
+      where: {
+        id: input.jobId,
+        status: AnalysisJobStatus.RUNNING,
+        leaseToken: input.expectedLeaseToken,
+        userId: input.expectedUserId,
+        repositoryId: input.expectedRepositoryId,
+        reservedTokens: input.expectedReservedTokens,
+        tokensSettledAt: null,
+        promptTokens: null,
+        completionTokens: null,
+        totalTokens: null,
+        providerRequestIds: { isEmpty: true },
+      },
+      data: {
+        promptTokens: input.promptTokens,
+        completionTokens: input.completionTokens,
+        totalTokens: input.totalTokens,
+        providerRequestIds: [input.providerRequestId],
       },
     });
     return result.count === 1;
