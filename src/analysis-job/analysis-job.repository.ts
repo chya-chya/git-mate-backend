@@ -68,9 +68,9 @@ export interface RecordAnalysisJobProviderChargeInput {
   expectedUserId: number;
   expectedRepositoryId: number;
   expectedReservedTokens: number;
-  promptTokens: number;
-  completionTokens: number;
-  totalTokens: number;
+  promptTokens: number | null;
+  completionTokens: number | null;
+  totalTokens: number | null;
   providerRequestId: string;
 }
 

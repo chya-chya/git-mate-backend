@@ -179,6 +179,46 @@ describe('AnalysisJobService', () => {
     );
   });
 
+  it('records a request-only checkpoint when provider usage is unknown', async () => {
+    repository.recordProviderCharge.mockResolvedValue(true);
+    const input = {
+      jobId: 'job-1',
+      expectedLeaseToken: 'lease-1',
+      expectedUserId: 7,
+      expectedRepositoryId: 9,
+      expectedReservedTokens: 20,
+      promptTokens: null,
+      completionTokens: null,
+      totalTokens: null,
+      providerRequestId: 'chatcmpl_unknown_usage',
+    };
+
+    await service.recordProviderCharge(input);
+
+    expect(repository.recordProviderCharge).toHaveBeenCalledWith(
+      input,
+      undefined,
+    );
+  });
+
+  it('rejects a partially known provider usage checkpoint', async () => {
+    await expect(
+      service.recordProviderCharge({
+        jobId: 'job-1',
+        expectedLeaseToken: 'lease-1',
+        expectedUserId: 7,
+        expectedRepositoryId: 9,
+        expectedReservedTokens: 20,
+        promptTokens: 10,
+        completionTokens: null,
+        totalTokens: 15,
+        providerRequestId: 'chatcmpl_partial_usage',
+      }),
+    ).rejects.toThrow('provider token usage must be entirely known');
+
+    expect(repository.recordProviderCharge).not.toHaveBeenCalled();
+  });
+
   it('persists a successful terminal transition with its lease and report fences', async () => {
     repository.transitionStatus.mockResolvedValue(true);
     const database = { analysisJob: {} } as unknown as AnalysisJobDatabase;

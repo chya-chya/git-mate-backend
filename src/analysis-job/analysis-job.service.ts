@@ -145,9 +145,9 @@ export interface RecordAnalysisJobProviderChargeInput {
   expectedUserId: number;
   expectedRepositoryId: number;
   expectedReservedTokens: number;
-  promptTokens: number;
-  completionTokens: number;
-  totalTokens: number;
+  promptTokens: number | null;
+  completionTokens: number | null;
+  totalTokens: number | null;
   providerRequestId: string;
 }
 
@@ -286,10 +286,26 @@ export class AnalysisJobService {
       input.expectedReservedTokens,
       'expectedReservedTokens',
     );
-    this.assertTokenCount(input.promptTokens, 'promptTokens');
-    this.assertTokenCount(input.completionTokens, 'completionTokens');
-    this.assertTokenCount(input.totalTokens, 'totalTokens');
-    if (input.promptTokens + input.completionTokens !== input.totalTokens) {
+    const { promptTokens, completionTokens, totalTokens } = input;
+    const hasKnownUsage =
+      promptTokens !== null &&
+      completionTokens !== null &&
+      totalTokens !== null;
+    const hasUnknownUsage =
+      promptTokens === null &&
+      completionTokens === null &&
+      totalTokens === null;
+    if (!hasKnownUsage && !hasUnknownUsage) {
+      throw new InvalidAnalysisJobInputError(
+        'provider token usage must be entirely known or entirely unknown',
+      );
+    }
+    if (hasKnownUsage) {
+      this.assertTokenCount(promptTokens, 'promptTokens');
+      this.assertTokenCount(completionTokens, 'completionTokens');
+      this.assertTokenCount(totalTokens, 'totalTokens');
+    }
+    if (hasKnownUsage && promptTokens + completionTokens !== totalTokens) {
       throw new InvalidAnalysisJobInputError(
         'totalTokens must equal promptTokens plus completionTokens',
       );

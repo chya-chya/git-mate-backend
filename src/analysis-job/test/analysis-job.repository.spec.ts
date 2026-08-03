@@ -166,6 +166,46 @@ describe('AnalysisJobRepository', () => {
     });
   });
 
+  it('checkpoints a provider request when token usage is unknown', async () => {
+    prisma.analysisJob.updateMany.mockResolvedValue({ count: 1 });
+
+    await expect(
+      repository.recordProviderCharge({
+        jobId: 'job-1',
+        expectedLeaseToken: 'lease-1',
+        expectedUserId: 7,
+        expectedRepositoryId: 9,
+        expectedReservedTokens: 20,
+        promptTokens: null,
+        completionTokens: null,
+        totalTokens: null,
+        providerRequestId: 'chatcmpl_unknown_usage',
+      }),
+    ).resolves.toBe(true);
+
+    expect(prisma.analysisJob.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: 'job-1',
+        status: AnalysisJobStatus.RUNNING,
+        leaseToken: 'lease-1',
+        userId: 7,
+        repositoryId: 9,
+        reservedTokens: 20,
+        tokensSettledAt: null,
+        promptTokens: null,
+        completionTokens: null,
+        totalTokens: null,
+        providerRequestIds: { isEmpty: true },
+      },
+      data: {
+        promptTokens: null,
+        completionTokens: null,
+        totalTokens: null,
+        providerRequestIds: ['chatcmpl_unknown_usage'],
+      },
+    });
+  });
+
   it('reports a stale transition when no row matches the guard', async () => {
     prisma.analysisJob.updateMany.mockResolvedValue({ count: 0 });
 

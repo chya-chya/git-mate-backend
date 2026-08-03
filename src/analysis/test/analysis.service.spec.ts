@@ -31,9 +31,9 @@ describe('AnalysisService', () => {
     analyzeError?: Error;
     providerCheckpoint?: {
       providerRequestId: string;
-      promptTokens: number;
-      completionTokens: number;
-      totalTokens: number;
+      promptTokens: number | null;
+      completionTokens: number | null;
+      totalTokens: number | null;
     };
     pullRequests?: unknown[];
     reportError?: Error;
@@ -299,6 +299,48 @@ describe('AnalysisService', () => {
     expect(transitionCalls[0][1]).toBe(transaction);
   });
 
+  it('does not call the LLM when a retry finds a request-only provider checkpoint', async () => {
+    const { analysisJobService, llmProvider, service, transaction } =
+      createFixture({
+        reservedTokens: 20,
+        providerCheckpoint: {
+          providerRequestId: 'chatcmpl_unknown_usage',
+          promptTokens: null,
+          completionTokens: null,
+          totalTokens: null,
+        },
+      });
+
+    await service.runAnalysisJob({} as never, jobContext);
+
+    expect(llmProvider.analyze).not.toHaveBeenCalled();
+    expect(analysisJobService.recordProviderCharge).not.toHaveBeenCalled();
+    expect(transaction.user.update).not.toHaveBeenCalled();
+    const transitionCalls = analysisJobService.transition.mock
+      .calls as unknown as Array<
+      [
+        {
+          toStatus: string;
+          data: {
+            errorCode: string;
+            providerRequestIds: string[];
+            totalTokens: number;
+          };
+        },
+        unknown,
+      ]
+    >;
+    expect(transitionCalls[0][0]).toMatchObject({
+      toStatus: 'FAILED',
+      data: {
+        errorCode: 'PROVIDER_RECONCILIATION_REQUIRED',
+        providerRequestIds: ['chatcmpl_unknown_usage'],
+        totalTokens: 0,
+      },
+    });
+    expect(transitionCalls[0][1]).toBe(transaction);
+  });
+
   it('does not call the LLM and terminates the Job when reservation fails', async () => {
     const { analysisJobService, llmProvider, service, transaction } =
       createFixture({ availableTokens: 0, tokenUpdateCount: 0 });
@@ -363,6 +405,17 @@ describe('AnalysisService', () => {
 
     await service.runAnalysisJob({} as never, jobContext);
 
+    expect(analysisJobService.recordProviderCharge).toHaveBeenCalledWith({
+      jobId: 'job-1',
+      expectedLeaseToken: 'lease-1',
+      expectedUserId: 7,
+      expectedRepositoryId: 9,
+      expectedReservedTokens: 20,
+      promptTokens: 10,
+      completionTokens: 5,
+      totalTokens: 15,
+      providerRequestId: 'chatcmpl_invalid_json',
+    });
     expect(transaction.analysisReport.create).not.toHaveBeenCalled();
     expect(transaction.user.update).toHaveBeenCalledWith({
       where: { id: 7 },
@@ -392,6 +445,9 @@ describe('AnalysisService', () => {
         totalTokens: 15,
       },
     });
+    expect(
+      analysisJobService.recordProviderCharge.mock.invocationCallOrder[0],
+    ).toBeLessThan(analysisJobService.transition.mock.invocationCallOrder[0]);
   });
 
   it('keeps the reservation and prevents retry when billed usage is unknown', async () => {
@@ -405,6 +461,17 @@ describe('AnalysisService', () => {
 
     await service.runAnalysisJob({} as never, jobContext);
 
+    expect(analysisJobService.recordProviderCharge).toHaveBeenCalledWith({
+      jobId: 'job-1',
+      expectedLeaseToken: 'lease-1',
+      expectedUserId: 7,
+      expectedRepositoryId: 9,
+      expectedReservedTokens: 20,
+      promptTokens: null,
+      completionTokens: null,
+      totalTokens: null,
+      providerRequestId: 'chatcmpl_missing_usage',
+    });
     expect(transaction.analysisReport.create).not.toHaveBeenCalled();
     expect(transaction.user.update).not.toHaveBeenCalled();
     const transitionCalls = analysisJobService.transition.mock
@@ -432,6 +499,35 @@ describe('AnalysisService', () => {
         providerRequestIds: ['chatcmpl_missing_usage'],
         totalTokens: 0,
       },
+    });
+    expect(
+      analysisJobService.recordProviderCharge.mock.invocationCallOrder[0],
+    ).toBeLessThan(analysisJobService.transition.mock.invocationCallOrder[0]);
+  });
+
+  it('returns a non-retryable error when a failed provider response cannot be checkpointed or terminated', async () => {
+    const { analysisJobService, service } = createFixture({
+      reservedTokens: 20,
+      analyzeError: new LlmProviderReconciliationError(
+        'chatcmpl_unpersisted',
+        null,
+      ),
+    });
+    analysisJobService.recordProviderCharge.mockRejectedValue(
+      new Error('checkpoint unavailable'),
+    );
+    analysisJobService.transition.mockRejectedValue(
+      new Error('terminal CAS unavailable'),
+    );
+
+    await expect(
+      service.runAnalysisJob({} as never, jobContext),
+    ).rejects.toMatchObject({
+      name: PostBillingAnalysisPersistenceError.name,
+      retryable: false,
+      jobId: 'job-1',
+      providerRequestId: 'chatcmpl_unpersisted',
+      usage: null,
     });
   });
 

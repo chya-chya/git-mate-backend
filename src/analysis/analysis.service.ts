@@ -63,8 +63,8 @@ export class PostBillingAnalysisPersistenceError extends Error {
 
   constructor(
     readonly jobId: string,
-    readonly providerRequestId: string,
-    readonly usage: AnalysisTokenUsage,
+    readonly providerRequestId: string | null,
+    readonly usage: AnalysisTokenUsage | null,
   ) {
     super(
       'Billed analysis metadata could not be persisted for reconciliation.',
@@ -222,13 +222,12 @@ export class AnalysisService {
           jobContext !== undefined &&
           error instanceof LlmProviderReconciliationError
         ) {
-          await this.terminateProviderReconciliation(
+          await this.checkpointAndTerminateProviderReconciliation(
             userId,
             repositoryId,
             jobContext,
             reservedTokens,
-            error.providerRequestId,
-            error.usage,
+            error,
           );
           return;
         }
@@ -557,6 +556,81 @@ export class AnalysisService {
         providerRequestId,
         usage,
       );
+    }
+  }
+
+  private async checkpointAndTerminateProviderReconciliation(
+    userId: number,
+    repositoryId: number,
+    jobContext: ResolvedAnalysisJobExecutionContext,
+    reservedTokens: number | null,
+    error: LlmProviderReconciliationError,
+  ): Promise<void> {
+    const usage = this.getValidTokenUsageOrNull(error.usage);
+    let checkpointError: unknown = null;
+
+    if (reservedTokens === null || error.providerRequestId === null) {
+      checkpointError = new InvalidAnalysisTokenUsageError();
+    } else {
+      try {
+        await this.analysisJobService.recordProviderCharge({
+          jobId: jobContext.jobId,
+          expectedLeaseToken: jobContext.leaseToken,
+          expectedUserId: userId,
+          expectedRepositoryId: repositoryId,
+          expectedReservedTokens: reservedTokens,
+          promptTokens: usage?.promptTokens ?? null,
+          completionTokens: usage?.completionTokens ?? null,
+          totalTokens: usage?.totalTokens ?? null,
+          providerRequestId: error.providerRequestId,
+        });
+      } catch (recordError) {
+        checkpointError = recordError;
+      }
+    }
+
+    try {
+      await this.terminateProviderReconciliation(
+        userId,
+        repositoryId,
+        jobContext,
+        reservedTokens,
+        error.providerRequestId,
+        usage,
+      );
+    } catch (reconciliationError) {
+      this.logger.error({
+        event: 'analysis_provider_reconciliation_persistence_failed',
+        jobId: jobContext.jobId,
+        providerRequestId: error.providerRequestId,
+        promptTokens: usage?.promptTokens ?? null,
+        completionTokens: usage?.completionTokens ?? null,
+        totalTokens: usage?.totalTokens ?? null,
+        retryable: false,
+        originalErrorName: error.name,
+        checkpointErrorName:
+          checkpointError === null ? null : this.getErrorName(checkpointError),
+        reconciliationErrorName: this.getErrorName(reconciliationError),
+      });
+      throw new PostBillingAnalysisPersistenceError(
+        jobContext.jobId,
+        error.providerRequestId,
+        usage,
+      );
+    }
+  }
+
+  private getValidTokenUsageOrNull(
+    usage: AnalysisTokenUsage | null,
+  ): AnalysisTokenUsage | null {
+    if (usage === null) {
+      return null;
+    }
+    try {
+      this.assertValidTokenUsage(usage);
+      return usage;
+    } catch {
+      return null;
     }
   }
 
