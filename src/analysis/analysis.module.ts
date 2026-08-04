@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { AnalysisService } from './analysis.service';
+import { AnalysisJobRunnerService, AnalysisService } from './analysis.service';
 import { AnalysisController } from './analysis.controller';
 import { PublicAnalysisController } from './public-analysis.controller';
 import { RefinerService } from './refiner.service';
@@ -14,12 +14,13 @@ import { AnalysisJobModule } from '../analysis-job/analysis-job.module';
   controllers: [AnalysisController, PublicAnalysisController],
   providers: [
     AnalysisService,
+    AnalysisJobRunnerService,
     RefinerService,
     PreprocessorService,
     LlmProviderService,
     MetricCalculatorService,
     StatService,
   ],
-  exports: [AnalysisService],
+  exports: [AnalysisService, AnalysisJobRunnerService],
 })
 export class AnalysisModule {}

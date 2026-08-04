@@ -1,0 +1,49 @@
+name: Analysis ledger
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/analysis-ledger.yml'
+      - 'prisma/**'
+      - 'src/analysis/**'
+      - 'src/analysis-job/**'
+      - 'src/prisma/**'
+      - 'package.json'
+      - 'package-lock.json'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: gitmate_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d gitmate_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/gitmate_test
+      TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/gitmate_test
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npm run build
+      - run: npm test -- --runInBand
+      - run: npm test -- --runInBand src/analysis-job/test/analysis-job.postgres.integration.spec.ts
+        env:
+          RUN_DATABASE_INTEGRATION_TESTS: 'true'

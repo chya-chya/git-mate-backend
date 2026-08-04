@@ -12,6 +12,10 @@ import {
   TransitionAnalysisJobRecordInput,
 } from './analysis-job.repository';
 import { CURRENT_ANALYSIS_EXECUTION_VERSION } from '../analysis/analysis-execution-version';
+import {
+  isValidAnalysisTokenUsage,
+  isValidProviderRequestId,
+} from '../analysis/analysis-billing-metadata';
 
 const ALLOWED_TRANSITIONS: Record<
   AnalysisJobStatus,
@@ -27,7 +31,6 @@ const ALLOWED_TRANSITIONS: Record<
   FAILED: [],
 };
 
-const PROVIDER_REQUEST_ID_PATTERN = /^[A-Za-z0-9._:/-]{1,128}$/;
 const MAX_PROVIDER_REQUEST_IDS = 10;
 
 export enum AnalysisJobFailureCode {
@@ -315,14 +318,11 @@ export class AnalysisJobService {
       );
     }
     if (hasKnownUsage) {
-      this.assertTokenCount(promptTokens, 'promptTokens');
-      this.assertTokenCount(completionTokens, 'completionTokens');
-      this.assertTokenCount(totalTokens, 'totalTokens');
-    }
-    if (hasKnownUsage && promptTokens + completionTokens !== totalTokens) {
-      throw new InvalidAnalysisJobInputError(
-        'totalTokens must equal promptTokens plus completionTokens',
-      );
+      this.assertValidTokenUsage({
+        promptTokens,
+        completionTokens,
+        totalTokens,
+      });
     }
     this.assertProviderRequestIds([input.providerRequestId]);
 
@@ -475,15 +475,7 @@ export class AnalysisJobService {
   private assertTokenSettlement(input: TokenSettlementInput): void {
     this.assertValidDate(input.completedAt, 'completedAt');
     this.assertValidDate(input.tokensSettledAt, 'tokensSettledAt');
-    this.assertTokenCount(input.promptTokens, 'promptTokens');
-    this.assertTokenCount(input.completionTokens, 'completionTokens');
-    this.assertTokenCount(input.totalTokens, 'totalTokens');
-
-    if (input.promptTokens + input.completionTokens !== input.totalTokens) {
-      throw new InvalidAnalysisJobInputError(
-        'totalTokens must equal promptTokens plus completionTokens',
-      );
-    }
+    this.assertValidTokenUsage(input);
     this.assertProviderRequestIds(input.providerRequestIds);
   }
 
@@ -509,12 +501,21 @@ export class AnalysisJobService {
         'unsettled provider token usage must be entirely known or entirely unknown',
       );
     }
-    this.assertTokenCount(promptTokens, 'promptTokens');
-    this.assertTokenCount(completionTokens, 'completionTokens');
-    this.assertTokenCount(totalTokens, 'totalTokens');
-    if (promptTokens + completionTokens !== totalTokens) {
+    this.assertValidTokenUsage({
+      promptTokens,
+      completionTokens,
+      totalTokens,
+    });
+  }
+
+  private assertValidTokenUsage(input: {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+  }): void {
+    if (!isValidAnalysisTokenUsage(input)) {
       throw new InvalidAnalysisJobInputError(
-        'totalTokens must equal promptTokens plus completionTokens',
+        'provider token usage must contain valid non-negative counts and a matching total',
       );
     }
   }
@@ -524,7 +525,7 @@ export class AnalysisJobService {
       !Array.isArray(providerRequestIds) ||
       providerRequestIds.length > MAX_PROVIDER_REQUEST_IDS ||
       providerRequestIds.some(
-        (requestId) => !PROVIDER_REQUEST_ID_PATTERN.test(requestId),
+        (requestId) => !isValidProviderRequestId(requestId),
       )
     ) {
       throw new InvalidAnalysisJobInputError('providerRequestIds is invalid');

@@ -8,9 +8,12 @@ import {
   CURRENT_ANALYSIS_EXECUTION_VERSION,
   assertSupportedAnalysisExecutionVersion,
 } from './analysis-execution-version';
+import {
+  isValidAnalysisTokenUsage,
+  isValidProviderRequestId,
+} from './analysis-billing-metadata';
 
 export const MAX_ANALYSIS_COMPLETION_TOKENS = 8192;
-const PROVIDER_REQUEST_ID_PATTERN = /^[A-Za-z0-9._:/-]{1,128}$/;
 
 export interface MetricEvaluation {
   score: number;
@@ -276,7 +279,7 @@ JSON 이스케이프 규칙을 철저히 준수하세요. 문자열 내에 쌍�
   }
 
   private assertProviderRequestId(value: unknown): string {
-    if (typeof value !== 'string' || !PROVIDER_REQUEST_ID_PATTERN.test(value)) {
+    if (!isValidProviderRequestId(value)) {
       throw new InvalidLlmProviderResponseError(null);
     }
     return value;
@@ -293,17 +296,15 @@ JSON 이스케이프 규칙을 철저히 준수하세요. 문자열 내에 쌍�
       | undefined,
     providerRequestId: string,
   ): NonNullable<typeof usage> {
-    if (
-      usage === null ||
-      usage === undefined ||
-      !Number.isSafeInteger(usage.prompt_tokens) ||
-      usage.prompt_tokens < 0 ||
-      !Number.isSafeInteger(usage.completion_tokens) ||
-      usage.completion_tokens < 0 ||
-      !Number.isSafeInteger(usage.total_tokens) ||
-      usage.total_tokens < 0 ||
-      usage.prompt_tokens + usage.completion_tokens !== usage.total_tokens
-    ) {
+    if (usage === null || usage === undefined) {
+      throw new InvalidLlmProviderResponseError(providerRequestId);
+    }
+    const normalizedUsage = {
+      promptTokens: usage.prompt_tokens,
+      completionTokens: usage.completion_tokens,
+      totalTokens: usage.total_tokens,
+    };
+    if (!isValidAnalysisTokenUsage(normalizedUsage)) {
       throw new InvalidLlmProviderResponseError(providerRequestId);
     }
     return usage;

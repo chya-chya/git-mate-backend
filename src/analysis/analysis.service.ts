@@ -20,6 +20,10 @@ import {
   AnalysisExecutionVersion,
   assertSupportedAnalysisExecutionVersion,
 } from './analysis-execution-version';
+import {
+  AnalysisTokenUsage,
+  isValidAnalysisTokenUsage,
+} from './analysis-billing-metadata';
 
 export interface AnalysisJobExecutionContext {
   jobId: string;
@@ -29,12 +33,6 @@ export interface AnalysisJobExecutionContext {
 interface ResolvedAnalysisJobExecutionContext
   extends AnalysisJobExecutionContext, AnalysisExecutionVersion {
   reservedTokens: number | null;
-}
-
-interface AnalysisTokenUsage {
-  promptTokens: number;
-  completionTokens: number;
-  totalTokens: number;
 }
 
 const ZERO_TOKEN_USAGE: AnalysisTokenUsage = {
@@ -80,8 +78,8 @@ export class PostBillingAnalysisPersistenceError extends Error {
 }
 
 @Injectable()
-export class AnalysisService {
-  private readonly logger = new Logger(AnalysisService.name);
+export class AnalysisJobRunnerService {
+  private readonly logger = new Logger(AnalysisJobRunnerService.name);
 
   constructor(
     private prisma: PrismaService,
@@ -800,17 +798,24 @@ export class AnalysisService {
     completionTokens: number;
     totalTokens: number;
   }): void {
-    if (
-      !Number.isSafeInteger(usage.promptTokens) ||
-      usage.promptTokens < 0 ||
-      !Number.isSafeInteger(usage.completionTokens) ||
-      usage.completionTokens < 0 ||
-      !Number.isSafeInteger(usage.totalTokens) ||
-      usage.totalTokens < 0 ||
-      usage.promptTokens + usage.completionTokens !== usage.totalTokens
-    ) {
+    if (!isValidAnalysisTokenUsage(usage)) {
       throw new InvalidAnalysisTokenUsageError();
     }
+  }
+}
+
+@Injectable()
+export class AnalysisService {
+  constructor(
+    private prisma: PrismaService,
+    private refiner: RefinerService,
+    private preprocessor: PreprocessorService,
+    private llmProvider: LlmProviderService,
+    private analysisJobRunner: AnalysisJobRunnerService,
+  ) {}
+
+  runAnalysis(userId: number, repositoryId: number, data: CollectedDataDto) {
+    return this.analysisJobRunner.runAnalysis(userId, repositoryId, data);
   }
 
   /**

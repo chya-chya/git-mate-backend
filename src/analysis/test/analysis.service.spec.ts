@@ -1,7 +1,7 @@
 import { AnalysisJobService } from '../../analysis-job/analysis-job.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
-  AnalysisService,
+  AnalysisJobRunnerService,
   PostBillingAnalysisPersistenceError,
 } from '../analysis.service';
 import {
@@ -17,7 +17,7 @@ import {
   UnsupportedAnalysisExecutionVersionError,
 } from '../analysis-execution-version';
 
-describe('AnalysisService', () => {
+describe('AnalysisJobRunnerService', () => {
   const metrics = {
     mutualRespectScore: 4,
     conflictManagementScore: 4,
@@ -120,7 +120,7 @@ describe('AnalysisService', () => {
       recordProviderCharge: jest.fn().mockResolvedValue({}),
       transition: jest.fn().mockResolvedValue({}),
     };
-    const service = new AnalysisService(
+    const service = new AnalysisJobRunnerService(
       prisma as unknown as PrismaService,
       refiner as unknown as RefinerService,
       preprocessor as unknown as PreprocessorService,

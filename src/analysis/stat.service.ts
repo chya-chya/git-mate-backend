@@ -1,20 +1,23 @@
 import { Injectable } from '@nestjs/common';
 import type { Prisma, UserStat } from '@prisma/client';
-import { PrismaService } from '../prisma/prisma.service';
 import type { AnalysisMetrics } from './metric-calculator.service';
+
+type UserStatDatabase = Pick<
+  Prisma.TransactionClient,
+  'userStat' | '$executeRaw'
+>;
 
 @Injectable()
 export class StatService {
-  constructor(private prisma: PrismaService) {}
-
   /**
    * Update user stats using weighted average
    */
   async updateStats(
     userId: number,
     newMetrics: AnalysisMetrics,
-    database: Pick<Prisma.TransactionClient, 'userStat'> = this.prisma,
+    database: UserStatDatabase,
   ): Promise<UserStat> {
+    await database.$executeRaw`SELECT pg_advisory_xact_lock(1196249940, ${userId})`;
     const existingStat = await database.userStat.findUnique({
       where: { userId },
     });

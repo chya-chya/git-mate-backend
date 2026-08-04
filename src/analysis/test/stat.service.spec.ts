@@ -1,15 +1,15 @@
-import { PrismaService } from '../../prisma/prisma.service';
 import { StatService } from '../stat.service';
 
 describe('StatService', () => {
-  const prisma = {
+  const transaction = {
+    $executeRaw: jest.fn().mockResolvedValue(1),
     userStat: {
       findUnique: jest.fn(),
       create: jest.fn(),
       update: jest.fn(),
     },
   };
-  const service = new StatService(prisma as unknown as PrismaService);
+  const service = new StatService();
   const metrics = {
     mutualRespectScore: 4,
     conflictManagementScore: 4,
@@ -26,31 +26,35 @@ describe('StatService', () => {
   });
 
   it('starts analysisCount at one for the first analysis', async () => {
-    prisma.userStat.findUnique.mockResolvedValue(null);
-    prisma.userStat.create.mockResolvedValue({});
+    transaction.userStat.findUnique.mockResolvedValue(null);
+    transaction.userStat.create.mockResolvedValue({});
 
-    await service.updateStats(7, metrics);
+    await service.updateStats(7, metrics, transaction as never);
 
-    expect(prisma.userStat.create).toHaveBeenCalledWith({
+    expect(transaction.$executeRaw).toHaveBeenCalled();
+    expect(transaction.userStat.create).toHaveBeenCalledWith({
       data: {
         userId: 7,
         ...metrics,
         analysisCount: 1,
       },
     });
+    expect(transaction.$executeRaw.mock.invocationCallOrder[0]).toBeLessThan(
+      transaction.userStat.findUnique.mock.invocationCallOrder[0],
+    );
   });
 
   it('increments analysisCount for an existing aggregate', async () => {
-    prisma.userStat.findUnique.mockResolvedValue({
+    transaction.userStat.findUnique.mockResolvedValue({
       userId: 7,
       analysisCount: 3,
       ...metrics,
     });
-    prisma.userStat.update.mockResolvedValue({});
+    transaction.userStat.update.mockResolvedValue({});
 
-    await service.updateStats(7, metrics);
+    await service.updateStats(7, metrics, transaction as never);
 
-    expect(prisma.userStat.update).toHaveBeenCalledWith({
+    expect(transaction.userStat.update).toHaveBeenCalledWith({
       where: { userId: 7 },
       data: {
         ...metrics,
@@ -61,6 +65,7 @@ describe('StatService', () => {
 
   it('uses the supplied transaction client for the entire stat update', async () => {
     const transaction = {
+      $executeRaw: jest.fn().mockResolvedValue(1),
       userStat: {
         findUnique: jest.fn().mockResolvedValue(null),
         create: jest.fn().mockResolvedValue({}),
@@ -72,7 +77,6 @@ describe('StatService', () => {
 
     expect(transaction.userStat.findUnique).toHaveBeenCalled();
     expect(transaction.userStat.create).toHaveBeenCalled();
-    expect(prisma.userStat.findUnique).not.toHaveBeenCalled();
-    expect(prisma.userStat.create).not.toHaveBeenCalled();
+    expect(transaction.$executeRaw).toHaveBeenCalled();
   });
 });
