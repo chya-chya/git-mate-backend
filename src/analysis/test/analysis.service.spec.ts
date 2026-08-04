@@ -12,6 +12,10 @@ import { MetricCalculatorService } from '../metric-calculator.service';
 import { PreprocessorService } from '../preprocessor.service';
 import { RefinerService } from '../refiner.service';
 import { StatService } from '../stat.service';
+import {
+  CURRENT_ANALYSIS_EXECUTION_VERSION,
+  UnsupportedAnalysisExecutionVersionError,
+} from '../analysis-execution-version';
 
 describe('AnalysisService', () => {
   const metrics = {
@@ -28,7 +32,13 @@ describe('AnalysisService', () => {
 
   function createFixture(options?: {
     availableTokens?: number;
+    actualUsage?: {
+      promptTokens: number;
+      completionTokens: number;
+      totalTokens: number;
+    };
     analyzeError?: Error;
+    executionVersion?: { modelVersion: string; promptVersion: string };
     providerCheckpoint?: {
       providerRequestId: string;
       promptTokens: number | null;
@@ -75,7 +85,11 @@ describe('AnalysisService', () => {
       : jest.fn().mockResolvedValue({
           providerRequestId: 'chatcmpl_actual_123',
           result: llmResult,
-          usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+          usage: options?.actualUsage ?? {
+            promptTokens: 10,
+            completionTokens: 5,
+            totalTokens: 15,
+          },
         });
     const llmProvider = {
       estimateTokenReservationForData: jest.fn().mockReturnValue({
@@ -87,10 +101,12 @@ describe('AnalysisService', () => {
     const calculator = { calculate: jest.fn().mockReturnValue(metrics) };
     const statService = { updateStats: jest.fn().mockResolvedValue({}) };
     const analysisJobService = {
+      create: jest.fn().mockResolvedValue({ id: 'job-1' }),
       getRunningJobContext: jest.fn().mockResolvedValue({
         id: 'job-1',
         userId: 7,
         repositoryId: 9,
+        ...(options?.executionVersion ?? CURRENT_ANALYSIS_EXECUTION_VERSION),
         reservedTokens: options?.reservedTokens ?? null,
         promptTokens: options?.providerCheckpoint?.promptTokens ?? null,
         completionTokens: options?.providerCheckpoint?.completionTokens ?? null,
@@ -128,7 +144,7 @@ describe('AnalysisService', () => {
     leaseToken: 'lease-1',
   };
 
-  it('keeps the synchronous report, stats, and token update atomic', async () => {
+  it('backs the synchronous entry point with a durable analysis Job', async () => {
     const {
       analysisJobService,
       llmProvider,
@@ -139,6 +155,12 @@ describe('AnalysisService', () => {
 
     await service.runAnalysis(7, 9, {} as never);
 
+    const createCalls = analysisJobService.create.mock
+      .calls as unknown as Array<
+      [{ userId: number; repositoryId: number; idempotencyKey: string }]
+    >;
+    expect(createCalls[0][0]).toMatchObject({ userId: 7, repositoryId: 9 });
+    expect(createCalls[0][0].idempotencyKey).toMatch(/^sync:/);
     expect(transaction.analysisReport.create).toHaveBeenCalled();
     expect(statService.updateStats).toHaveBeenCalledWith(
       7,
@@ -146,11 +168,16 @@ describe('AnalysisService', () => {
       transaction,
     );
     expect(transaction.user.updateMany).toHaveBeenCalledWith({
-      where: { id: 7, availableTokens: { gte: 15 } },
-      data: { availableTokens: { decrement: 15 } },
+      where: { id: 7, availableTokens: { gte: 20 } },
+      data: { availableTokens: { decrement: 20 } },
     });
-    expect(llmProvider.estimateTokenReservationForData).not.toHaveBeenCalled();
-    expect(analysisJobService.transition).not.toHaveBeenCalled();
+    expect(llmProvider.estimateTokenReservationForData).toHaveBeenCalled();
+    const transitionCalls = analysisJobService.transition.mock
+      .calls as unknown as Array<[{ toStatus: string }]>;
+    expect(transitionCalls.map(([input]) => input.toStatus)).toEqual([
+      'RUNNING',
+      'SUCCEEDED',
+    ]);
   });
 
   it('reserves the worker budget before the LLM call and refunds the unused amount', async () => {
@@ -163,6 +190,15 @@ describe('AnalysisService', () => {
     } = createFixture();
 
     await service.runAnalysisJob({} as never, jobContext);
+
+    expect(llmProvider.estimateTokenReservationForData).toHaveBeenCalledWith(
+      {},
+      expect.objectContaining(CURRENT_ANALYSIS_EXECUTION_VERSION),
+    );
+    expect(llmProvider.analyze).toHaveBeenCalledWith(
+      {},
+      expect.objectContaining(CURRENT_ANALYSIS_EXECUTION_VERSION),
+    );
 
     expect(transaction.user.updateMany).toHaveBeenCalledWith({
       where: { id: 7, availableTokens: { gte: 20 } },
@@ -252,6 +288,24 @@ describe('AnalysisService', () => {
     });
   });
 
+  it('rejects an unsupported ledger version before reservation or provider calls', async () => {
+    const { analysisJobService, llmProvider, service, transaction } =
+      createFixture({
+        executionVersion: {
+          modelVersion: 'gpt-5.1',
+          promptVersion: 'v2',
+        },
+      });
+
+    await expect(
+      service.runAnalysisJob({} as never, jobContext),
+    ).rejects.toBeInstanceOf(UnsupportedAnalysisExecutionVersionError);
+
+    expect(transaction.user.updateMany).not.toHaveBeenCalled();
+    expect(analysisJobService.reserveTokens).not.toHaveBeenCalled();
+    expect(llmProvider.analyze).not.toHaveBeenCalled();
+  });
+
   it('does not call the LLM when a retry finds a durable provider checkpoint', async () => {
     const { analysisJobService, llmProvider, service, transaction } =
       createFixture({
@@ -281,7 +335,8 @@ describe('AnalysisService', () => {
             errorCode: string;
             errorRetryable: boolean;
             providerRequestIds: string[];
-            totalTokens: number;
+            totalTokens: number | null;
+            tokensSettledAt: Date | null;
           };
         },
         unknown,
@@ -324,7 +379,8 @@ describe('AnalysisService', () => {
           data: {
             errorCode: string;
             providerRequestIds: string[];
-            totalTokens: number;
+            totalTokens: number | null;
+            tokensSettledAt: Date | null;
           };
         },
         unknown,
@@ -335,7 +391,8 @@ describe('AnalysisService', () => {
       data: {
         errorCode: 'PROVIDER_RECONCILIATION_REQUIRED',
         providerRequestIds: ['chatcmpl_unknown_usage'],
-        totalTokens: 0,
+        totalTokens: null,
+        tokensSettledAt: null,
       },
     });
     expect(transitionCalls[0][1]).toBe(transaction);
@@ -430,7 +487,8 @@ describe('AnalysisService', () => {
             errorCode: string;
             errorRetryable: boolean;
             providerRequestIds: string[];
-            totalTokens: number;
+            totalTokens: number | null;
+            tokensSettledAt: Date | null;
           };
         },
         unknown,
@@ -484,7 +542,8 @@ describe('AnalysisService', () => {
             errorCode: string;
             errorRetryable: boolean;
             providerRequestIds: string[];
-            totalTokens: number;
+            totalTokens: number | null;
+            tokensSettledAt: Date | null;
           };
         },
         unknown,
@@ -497,12 +556,120 @@ describe('AnalysisService', () => {
         errorCode: 'PROVIDER_RECONCILIATION_REQUIRED',
         errorRetryable: false,
         providerRequestIds: ['chatcmpl_missing_usage'],
-        totalTokens: 0,
+        totalTokens: null,
+        tokensSettledAt: null,
       },
     });
     expect(
       analysisJobService.recordProviderCharge.mock.invocationCallOrder[0],
     ).toBeLessThan(analysisJobService.transition.mock.invocationCallOrder[0]);
+  });
+
+  it('atomically charges usage above the reservation before settling the Job', async () => {
+    const { analysisJobService, service, transaction } = createFixture({
+      reservedTokens: 20,
+      actualUsage: {
+        promptTokens: 15,
+        completionTokens: 10,
+        totalTokens: 25,
+      },
+      tokenUpdateCount: 1,
+    });
+
+    await service.runAnalysisJob({} as never, jobContext);
+
+    expect(transaction.user.updateMany).toHaveBeenCalledWith({
+      where: { id: 7, availableTokens: { gte: 5 } },
+      data: { availableTokens: { decrement: 5 } },
+    });
+    const transitionCalls = analysisJobService.transition.mock
+      .calls as unknown as Array<
+      [
+        {
+          toStatus: string;
+          data: {
+            errorCode: string;
+            totalTokens: number;
+            tokensSettledAt: Date;
+          };
+        },
+        unknown,
+      ]
+    >;
+    expect(transitionCalls[0][0]).toMatchObject({
+      toStatus: 'FAILED',
+      data: {
+        errorCode: 'TOKEN_BUDGET_EXCEEDED',
+        totalTokens: 25,
+      },
+    });
+    expect(transitionCalls[0][0].data.tokensSettledAt).toBeInstanceOf(Date);
+    expect(transitionCalls[0][1]).toBe(transaction);
+  });
+
+  it('leaves above-reservation usage unsettled when the additional debit fails', async () => {
+    const { analysisJobService, service, transaction } = createFixture({
+      reservedTokens: 20,
+      actualUsage: {
+        promptTokens: 15,
+        completionTokens: 10,
+        totalTokens: 25,
+      },
+      tokenUpdateCount: 0,
+    });
+
+    await service.runAnalysisJob({} as never, jobContext);
+
+    const transitionCalls = analysisJobService.transition.mock
+      .calls as unknown as Array<
+      [
+        {
+          toStatus: string;
+          data: {
+            errorCode: string;
+            totalTokens: number;
+            tokensSettledAt: Date | null;
+          };
+        },
+        unknown,
+      ]
+    >;
+    expect(transitionCalls[0][0]).toMatchObject({
+      toStatus: 'FAILED',
+      data: {
+        errorCode: 'PROVIDER_RECONCILIATION_REQUIRED',
+        totalTokens: 25,
+        tokensSettledAt: null,
+      },
+    });
+    expect(transaction.user.update).not.toHaveBeenCalled();
+  });
+
+  it('durably reconciles a billed failure from the synchronous entry point', async () => {
+    const { analysisJobService, service } = createFixture({
+      analyzeError: new LlmProviderReconciliationError(
+        'chatcmpl_sync_missing_usage',
+        null,
+      ),
+    });
+
+    await service.runAnalysis(7, 9, {} as never);
+
+    expect(analysisJobService.recordProviderCharge).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobId: 'job-1',
+        providerRequestId: 'chatcmpl_sync_missing_usage',
+        promptTokens: null,
+        completionTokens: null,
+        totalTokens: null,
+      }),
+    );
+    const transitionCalls = analysisJobService.transition.mock
+      .calls as unknown as Array<[{ toStatus: string; data?: object }]>;
+    expect(transitionCalls.map(([input]) => input.toStatus)).toEqual([
+      'RUNNING',
+      'FAILED',
+    ]);
   });
 
   it('returns a non-retryable error when a failed provider response cannot be checkpointed or terminated', async () => {

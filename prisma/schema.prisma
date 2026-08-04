@@ -189,8 +189,8 @@ model AnalysisJob {
   idempotencyKey String
   requestHash    String
   sourceCursor   DateTime?
-  modelVersion   String    @default("legacy")
-  promptVersion  String    @default("legacy")
+  modelVersion   String    @default("gpt-5-mini")
+  promptVersion  String    @default("analysis-v1")
 
   estimatedTokens    Int?
   reservedTokens     Int?

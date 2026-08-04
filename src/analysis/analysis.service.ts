@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { Injectable, Logger } from '@nestjs/common';
 import { AnalysisJobStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -15,13 +16,18 @@ import {
   AnalysisJobFailureCode,
   AnalysisJobService,
 } from '../analysis-job/analysis-job.service';
+import {
+  AnalysisExecutionVersion,
+  assertSupportedAnalysisExecutionVersion,
+} from './analysis-execution-version';
 
 export interface AnalysisJobExecutionContext {
   jobId: string;
   leaseToken: string;
 }
 
-interface ResolvedAnalysisJobExecutionContext extends AnalysisJobExecutionContext {
+interface ResolvedAnalysisJobExecutionContext
+  extends AnalysisJobExecutionContext, AnalysisExecutionVersion {
   reservedTokens: number | null;
 }
 
@@ -90,8 +96,29 @@ export class AnalysisService {
   /**
    * Run the full analysis pipeline for a specific user and repository
    */
-  runAnalysis(userId: number, repositoryId: number, data: CollectedDataDto) {
-    return this.executeAnalysis(userId, repositoryId, data);
+  async runAnalysis(
+    userId: number,
+    repositoryId: number,
+    data: CollectedDataDto,
+  ) {
+    const leaseToken = randomUUID();
+    const startedAt = new Date();
+    const job = await this.analysisJobService.create({
+      userId,
+      repositoryId,
+      idempotencyKey: `sync:${randomUUID()}`,
+    });
+    await this.analysisJobService.transition({
+      jobId: job.id,
+      fromStatus: AnalysisJobStatus.QUEUED,
+      toStatus: AnalysisJobStatus.RUNNING,
+      data: {
+        leaseToken,
+        leaseExpiresAt: new Date(startedAt.getTime() + 15 * 60 * 1000),
+        startedAt,
+      },
+    });
+    return this.runAnalysisJob(data, { jobId: job.id, leaseToken });
   }
 
   /**
@@ -108,6 +135,8 @@ export class AnalysisService {
     const resolvedContext = {
       ...jobContext,
       reservedTokens: job.reservedTokens,
+      modelVersion: job.modelVersion,
+      promptVersion: job.promptVersion,
     };
     const providerCheckpoint = this.getProviderChargeCheckpoint(job);
     if (providerCheckpoint !== null) {
@@ -120,6 +149,7 @@ export class AnalysisService {
         providerCheckpoint.usage,
       );
     }
+    assertSupportedAnalysisExecutionVersion(resolvedContext);
     return this.executeAnalysis(
       job.userId,
       job.repositoryId,
@@ -177,8 +207,10 @@ export class AnalysisService {
 
       let reservedTokens: number | null = null;
       if (jobContext !== undefined) {
-        const reservation =
-          this.llmProvider.estimateTokenReservationForData(preprocessedData);
+        const reservation = this.llmProvider.estimateTokenReservationForData(
+          preprocessedData,
+          jobContext,
+        );
         try {
           reservedTokens = await this.ensureWorkerTokenReservation(
             userId,
@@ -216,7 +248,10 @@ export class AnalysisService {
       // 3. LLM Analysis
       let llmResponse: LlmAnalysisResponse;
       try {
-        llmResponse = await this.llmProvider.analyze(preprocessedData);
+        llmResponse = await this.llmProvider.analyze(
+          preprocessedData,
+          jobContext,
+        );
       } catch (error) {
         if (
           jobContext !== undefined &&
@@ -284,14 +319,13 @@ export class AnalysisService {
         reservedTokens !== null &&
         usage.totalTokens > reservedTokens
       ) {
-        await this.terminateWorkerJob(
+        await this.terminateProviderReconciliation(
           userId,
           repositoryId,
           jobContext,
-          AnalysisJobFailureCode.TOKEN_BUDGET_EXCEEDED,
+          reservedTokens,
+          providerRequestId,
           usage,
-          0,
-          [providerRequestId],
         );
         return;
       }
@@ -461,35 +495,84 @@ export class AnalysisService {
     repositoryId: number,
     jobContext: ResolvedAnalysisJobExecutionContext,
     errorCode: AnalysisJobFailureCode,
-    usage: AnalysisTokenUsage,
+    usage: AnalysisTokenUsage | null,
     refundTokens: number,
     providerRequestIds: string[] = [],
+    options: {
+      tokensSettled?: boolean;
+      additionalDebitTokens?: number;
+    } = {},
   ): Promise<void> {
     const completedAt = new Date();
     await this.prisma.$transaction(async (tx) => {
-      if (refundTokens > 0) {
+      let terminalErrorCode = errorCode;
+      let tokensSettled = options.tokensSettled ?? true;
+      if ((options.additionalDebitTokens ?? 0) > 0) {
+        const additionalDebit = await tx.user.updateMany({
+          where: {
+            id: userId,
+            availableTokens: { gte: options.additionalDebitTokens },
+          },
+          data: {
+            availableTokens: {
+              decrement: options.additionalDebitTokens,
+            },
+          },
+        });
+        if (additionalDebit.count !== 1) {
+          terminalErrorCode =
+            AnalysisJobFailureCode.PROVIDER_RECONCILIATION_REQUIRED;
+          tokensSettled = false;
+        }
+      }
+      if (tokensSettled && refundTokens > 0) {
         await tx.user.update({
           where: { id: userId },
           data: { availableTokens: { increment: refundTokens } },
         });
       }
+      const transitionBase = {
+        jobId: jobContext.jobId,
+        fromStatus: AnalysisJobStatus.RUNNING,
+        toStatus: AnalysisJobStatus.FAILED,
+        expectedLeaseToken: jobContext.leaseToken,
+        expectedUserId: userId,
+        expectedRepositoryId: repositoryId,
+        expectedReservedTokens: jobContext.reservedTokens,
+      } as const;
+      if (tokensSettled) {
+        if (usage === null) {
+          throw new InvalidAnalysisTokenUsageError();
+        }
+        await this.analysisJobService.transition(
+          {
+            ...transitionBase,
+            data: {
+              completedAt,
+              tokensSettledAt: completedAt,
+              promptTokens: usage.promptTokens,
+              completionTokens: usage.completionTokens,
+              totalTokens: usage.totalTokens,
+              providerRequestIds,
+              errorCode: terminalErrorCode,
+              errorRetryable: false,
+            },
+          },
+          tx,
+        );
+        return;
+      }
       await this.analysisJobService.transition(
         {
-          jobId: jobContext.jobId,
-          fromStatus: AnalysisJobStatus.RUNNING,
-          toStatus: AnalysisJobStatus.FAILED,
-          expectedLeaseToken: jobContext.leaseToken,
-          expectedUserId: userId,
-          expectedRepositoryId: repositoryId,
-          expectedReservedTokens: jobContext.reservedTokens,
+          ...transitionBase,
           data: {
             completedAt,
-            tokensSettledAt: completedAt,
-            promptTokens: usage.promptTokens,
-            completionTokens: usage.completionTokens,
-            totalTokens: usage.totalTokens,
+            tokensSettledAt: null,
+            promptTokens: usage?.promptTokens ?? null,
+            completionTokens: usage?.completionTokens ?? null,
+            totalTokens: usage?.totalTokens ?? null,
             providerRequestIds,
-            errorCode,
+            errorCode: AnalysisJobFailureCode.PROVIDER_RECONCILIATION_REQUIRED,
             errorRetryable: false,
           },
         },
@@ -506,6 +589,25 @@ export class AnalysisService {
     providerRequestId: string | null,
     usage: AnalysisTokenUsage | null,
   ): Promise<void> {
+    if (
+      usage !== null &&
+      reservedTokens !== null &&
+      usage.totalTokens > reservedTokens
+    ) {
+      return this.terminateWorkerJob(
+        userId,
+        repositoryId,
+        jobContext,
+        AnalysisJobFailureCode.TOKEN_BUDGET_EXCEEDED,
+        usage,
+        0,
+        providerRequestId === null ? [] : [providerRequestId],
+        {
+          tokensSettled: true,
+          additionalDebitTokens: usage.totalTokens - reservedTokens,
+        },
+      );
+    }
     const refundTokens =
       usage === null || reservedTokens === null
         ? 0
@@ -515,9 +617,10 @@ export class AnalysisService {
       repositoryId,
       jobContext,
       AnalysisJobFailureCode.PROVIDER_RECONCILIATION_REQUIRED,
-      usage ?? ZERO_TOKEN_USAGE,
+      usage,
       refundTokens,
       providerRequestId === null ? [] : [providerRequestId],
+      { tokensSettled: usage !== null && reservedTokens !== null },
     );
   }
 

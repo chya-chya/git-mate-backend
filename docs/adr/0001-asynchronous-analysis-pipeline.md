@@ -444,7 +444,9 @@ model AnalysisReport {
 ### 9.3 핵심 불변 조건
 
 - `SUCCEEDED`이면 `resultReportId`, `tokensSettledAt`, `completedAt`이 반드시 존재한다.
-- `FAILED`이면 `tokensSettledAt`, `completedAt`, `lastErrorCode`가 반드시 존재한다.
+- `FAILED`이면 `completedAt`, `lastErrorCode`가 반드시 존재한다. 단,
+  `PROVIDER_RECONCILIATION_REQUIRED`는 과금액을 확정할 수 없으므로 `tokensSettledAt`을
+  `NULL`로 유지할 수 있다.
 - `RUNNING` 작업을 갱신할 때는 `id + leaseToken`을 함께 비교한다.
 - `tokensSettledAt`이 설정된 Job은 토큰을 다시 차감하거나 환불하지 않는다.
 - 하나의 `AnalysisReport`는 최대 하나의 `AnalysisJob` 결과다.
@@ -469,13 +471,19 @@ Job 생성 시에는 정확한 데이터 크기를 모르므로 토큰을 예약
 동일한 예약 한도 안에서 `consumedTokens`만 누적하고, 종결 시 한 번 정산한다.
 
 예약액은 입력 예상치만 사용하지 않고 설정된 최대 출력량까지 포함하므로 정상 흐름에서는
-`consumedTokens <= reservedTokens`여야 한다. 이 조건을 초과하면 추가 차감으로 음수 잔액을
-만들지 않고 `TOKEN_BUDGET_EXCEEDED`로 중단하고 운영 알림을 발생시킨다.
+`consumedTokens <= reservedTokens`여야 한다. 이 조건을 초과하면 초과분을
+`availableTokens >= additionalTokens` 조건으로 원자적으로 추가 차감한다. 성공하면 실제
+사용량 전액을 `TOKEN_BUDGET_EXCEEDED`로 정산하고, 실패하면 실제 사용량은 보존하되
+`tokensSettledAt`을 설정하지 않고 `PROVIDER_RECONCILIATION_REQUIRED`로 격리한다.
 
 외부 LLM 호출 성공 직후 DB 기록 전에 Lambda가 종료되면 실제 과금과 `consumedTokens` 사이에
 차이가 생길 수 있다. 이 구간은 분산 트랜잭션으로 제거할 수 없다. provider request ID를
 구조화 로그와 `usage`에 가능한 즉시 남기고, 차이가 의심되는 Job은 자동 재실행하지 않은 채
 운영자가 대사(reconciliation)하도록 한다.
+
+Provider request ID는 확인했지만 usage가 누락되거나 유효하지 않으면 토큰 필드를 0으로
+변환하지 않는다. request ID만 체크포인트하고 토큰 필드와 `tokensSettledAt`을 `NULL`로
+유지하여 "0 토큰 사용"과 "사용량 미확정"을 구분한다.
 
 ## 11. 중복 요청과 중복 메시지 처리
 
@@ -589,6 +597,8 @@ CloudWatch에 다음 지표와 경보를 구성한다.
 
 폐기 기간에는 기존 API의 요청·응답 계약을 바꾸지 않는다. 내부 구현을 비동기로 바꾸면서
 기존 `200 + CollectedDataDto` 응답을 `202`로 바꾸는 것은 호환이 아니므로 금지한다.
+기존 동기 API도 응답 계약은 유지하되 내부에서는 즉시 `AnalysisJob`을 만들고 같은 예약,
+과금 체크포인트, 정산 규칙을 사용한다.
 
 ## 16. 구현 PR 순서와 승인 경계
 

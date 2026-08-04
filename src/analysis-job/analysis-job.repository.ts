@@ -23,10 +23,10 @@ export interface CreateAnalysisJobRecordInput {
 export interface AnalysisJobTransitionData {
   stage?: AnalysisJobStage | null;
   progress?: number;
-  promptTokens?: number;
-  completionTokens?: number;
-  totalTokens?: number;
-  tokensSettledAt?: Date;
+  promptTokens?: number | null;
+  completionTokens?: number | null;
+  totalTokens?: number | null;
+  tokensSettledAt?: Date | null;
   providerRequestIds?: string[];
   nextPublishAt?: Date | null;
   leaseToken?: string | null;
@@ -46,6 +46,8 @@ export type RunningAnalysisJobContext = Pick<
   | 'id'
   | 'userId'
   | 'repositoryId'
+  | 'modelVersion'
+  | 'promptVersion'
   | 'reservedTokens'
   | 'promptTokens'
   | 'completionTokens'
@@ -157,6 +159,8 @@ export class AnalysisJobRepository {
         id: true,
         userId: true,
         repositoryId: true,
+        modelVersion: true,
+        promptVersion: true,
         reservedTokens: true,
         promptTokens: true,
         completionTokens: true,

@@ -11,6 +11,7 @@ import {
   RunningAnalysisJobContext,
   TransitionAnalysisJobRecordInput,
 } from './analysis-job.repository';
+import { CURRENT_ANALYSIS_EXECUTION_VERSION } from '../analysis/analysis-execution-version';
 
 const ALLOWED_TRANSITIONS: Record<
   AnalysisJobStatus,
@@ -26,7 +27,6 @@ const ALLOWED_TRANSITIONS: Record<
   FAILED: [],
 };
 
-const VERSION_PATTERN = /^[A-Za-z0-9._:/-]{1,64}$/;
 const PROVIDER_REQUEST_ID_PATTERN = /^[A-Za-z0-9._:/-]{1,128}$/;
 const MAX_PROVIDER_REQUEST_IDS = 10;
 
@@ -63,8 +63,6 @@ export interface CreateAnalysisJobInput {
   userId: number;
   repositoryId: number;
   idempotencyKey: string;
-  modelVersion: string;
-  promptVersion: string;
   sourceCursor?: Date | null;
 }
 
@@ -80,6 +78,17 @@ interface TokenSettlementInput {
 interface FailureInput extends TokenSettlementInput {
   errorCode: AnalysisJobFailureCode;
   errorRetryable: boolean;
+}
+
+interface UnsettledProviderReconciliationFailureInput {
+  completedAt: Date;
+  tokensSettledAt: null;
+  promptTokens: number | null;
+  completionTokens: number | null;
+  totalTokens: number | null;
+  providerRequestIds: string[];
+  errorCode: typeof AnalysisJobFailureCode.PROVIDER_RECONCILIATION_REQUIRED;
+  errorRetryable: false;
 }
 
 export type TransitionAnalysisJobInput =
@@ -127,7 +136,7 @@ export type TransitionAnalysisJobInput =
       expectedUserId: number;
       expectedRepositoryId: number;
       expectedReservedTokens: number | null;
-      data: FailureInput;
+      data: FailureInput | UnsettledProviderReconciliationFailureInput;
     };
 
 export interface ReserveAnalysisJobTokensInput {
@@ -188,9 +197,14 @@ export class AnalysisJobService {
   create(input: CreateAnalysisJobInput): Promise<AnalysisJob> {
     this.validateCreateInput(input);
 
-    return this.repository.create({
+    const versionedInput = {
       ...input,
-      requestHash: this.createRequestHash(input),
+      ...CURRENT_ANALYSIS_EXECUTION_VERSION,
+    };
+
+    return this.repository.create({
+      ...versionedInput,
+      requestHash: this.createRequestHash(versionedInput),
       status: AnalysisJobStatus.QUEUED,
       stage: AnalysisJobStage.WAITING,
       progress: 0,
@@ -346,18 +360,17 @@ export class AnalysisJobService {
     ) {
       throw new InvalidAnalysisJobInputError('idempotencyKey is invalid');
     }
-    if (!VERSION_PATTERN.test(input.modelVersion)) {
-      throw new InvalidAnalysisJobInputError('modelVersion is invalid');
-    }
-    if (!VERSION_PATTERN.test(input.promptVersion)) {
-      throw new InvalidAnalysisJobInputError('promptVersion is invalid');
-    }
     if (input.sourceCursor != null) {
       this.assertValidDate(input.sourceCursor, 'sourceCursor');
     }
   }
 
-  private createRequestHash(input: CreateAnalysisJobInput): string {
+  private createRequestHash(
+    input: CreateAnalysisJobInput & {
+      modelVersion: string;
+      promptVersion: string;
+    },
+  ): string {
     const canonicalRequest = JSON.stringify({
       userId: input.userId,
       repositoryId: input.repositoryId,
@@ -392,8 +405,8 @@ export class AnalysisJobService {
       return;
     }
 
-    this.assertTokenSettlement(input.data);
     if (input.toStatus === AnalysisJobStatus.SUCCEEDED) {
+      this.assertTokenSettlement(input.data);
       if (!Number.isInteger(input.data.reportId) || input.data.reportId <= 0) {
         throw new InvalidAnalysisJobInputError(
           'reportId must be a positive integer',
@@ -428,6 +441,22 @@ export class AnalysisJobService {
         'errorRetryable must be a boolean',
       );
     }
+    if (input.data.tokensSettledAt === null) {
+      if (
+        input.data.errorCode !==
+          AnalysisJobFailureCode.PROVIDER_RECONCILIATION_REQUIRED ||
+        input.data.errorRetryable !== false
+      ) {
+        throw new InvalidAnalysisJobInputError(
+          'only non-retryable provider reconciliation failures may remain unsettled',
+        );
+      }
+      this.assertValidDate(input.data.completedAt, 'completedAt');
+      this.assertOptionalTokenUsage(input.data);
+      this.assertProviderRequestIds(input.data.providerRequestIds);
+    } else {
+      this.assertTokenSettlement(input.data);
+    }
     if (input.fromStatus === AnalysisJobStatus.RUNNING) {
       this.assertPositiveInteger(input.expectedUserId, 'expectedUserId');
       this.assertPositiveInteger(
@@ -456,6 +485,38 @@ export class AnalysisJobService {
       );
     }
     this.assertProviderRequestIds(input.providerRequestIds);
+  }
+
+  private assertOptionalTokenUsage(input: {
+    promptTokens: number | null;
+    completionTokens: number | null;
+    totalTokens: number | null;
+  }): void {
+    const { promptTokens, completionTokens, totalTokens } = input;
+    const hasUnknownUsage =
+      promptTokens === null &&
+      completionTokens === null &&
+      totalTokens === null;
+    if (hasUnknownUsage) {
+      return;
+    }
+    if (
+      promptTokens === null ||
+      completionTokens === null ||
+      totalTokens === null
+    ) {
+      throw new InvalidAnalysisJobInputError(
+        'unsettled provider token usage must be entirely known or entirely unknown',
+      );
+    }
+    this.assertTokenCount(promptTokens, 'promptTokens');
+    this.assertTokenCount(completionTokens, 'completionTokens');
+    this.assertTokenCount(totalTokens, 'totalTokens');
+    if (promptTokens + completionTokens !== totalTokens) {
+      throw new InvalidAnalysisJobInputError(
+        'totalTokens must equal promptTokens plus completionTokens',
+      );
+    }
   }
 
   private assertProviderRequestIds(providerRequestIds: string[]): void {

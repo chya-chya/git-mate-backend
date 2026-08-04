@@ -7,6 +7,10 @@ import {
   LlmProviderReconciliationError,
   LlmTokenEstimationError,
 } from '../llm-provider.service';
+import {
+  CURRENT_ANALYSIS_EXECUTION_VERSION,
+  UnsupportedAnalysisExecutionVersionError,
+} from '../analysis-execution-version';
 
 jest.mock('js-tiktoken', () => ({
   getEncoding: jest.fn(() => ({
@@ -46,7 +50,7 @@ describe('LlmProviderService billing metadata', () => {
   });
 
   it('returns the actual provider request ID with validated usage', async () => {
-    const { service } = createService({
+    const { create, service } = createService({
       id: 'chatcmpl_actual_123',
       choices: [{ message: { content: '{}' } }],
       usage: {
@@ -60,6 +64,11 @@ describe('LlmProviderService billing metadata', () => {
       providerRequestId: 'chatcmpl_actual_123',
       usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
     });
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: CURRENT_ANALYSIS_EXECUTION_VERSION.modelVersion,
+      }),
+    );
   });
 
   it('preserves request ID and usage when billed JSON cannot be parsed', async () => {
@@ -89,6 +98,18 @@ describe('LlmProviderService billing metadata', () => {
     expect(() => service.estimateTokenReservationForData(data)).toThrow(
       LlmTokenEstimationError,
     );
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unsupported ledger version before calling the provider', async () => {
+    const { create, service } = createService();
+
+    await expect(
+      service.analyze(data, {
+        modelVersion: 'gpt-5.1',
+        promptVersion: 'v2',
+      }),
+    ).rejects.toBeInstanceOf(UnsupportedAnalysisExecutionVersionError);
     expect(create).not.toHaveBeenCalled();
   });
 });

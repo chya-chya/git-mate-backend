@@ -23,8 +23,8 @@ CREATE TABLE "analysis_jobs" (
     "idempotencyKey" TEXT NOT NULL,
     "requestHash" TEXT NOT NULL,
     "sourceCursor" TIMESTAMP(3),
-    "modelVersion" TEXT NOT NULL DEFAULT 'legacy',
-    "promptVersion" TEXT NOT NULL DEFAULT 'legacy',
+    "modelVersion" TEXT NOT NULL DEFAULT 'gpt-5-mini',
+    "promptVersion" TEXT NOT NULL DEFAULT 'analysis-v1',
     "estimatedTokens" INTEGER,
     "reservedTokens" INTEGER,
     "promptTokens" INTEGER,
@@ -68,7 +68,15 @@ CREATE TABLE "analysis_jobs" (
         "status" <> 'SUCCEEDED' OR ("progress" = 100 AND "completedAt" IS NOT NULL AND "tokensSettledAt" IS NOT NULL)
     ),
     CONSTRAINT "analysis_jobs_failed_check" CHECK (
-        "status" <> 'FAILED' OR ("completedAt" IS NOT NULL AND "tokensSettledAt" IS NOT NULL AND "lastErrorCode" IS NOT NULL)
+        "status" <> 'FAILED' OR
+        (
+            "completedAt" IS NOT NULL AND
+            "lastErrorCode" IS NOT NULL AND
+            (
+                "tokensSettledAt" IS NOT NULL OR
+                "lastErrorCode" = 'PROVIDER_RECONCILIATION_REQUIRED'
+            )
+        )
     ),
     CONSTRAINT "analysis_jobs_terminal_token_settlement_check" CHECK (
         "status" NOT IN ('SUCCEEDED', 'FAILED') OR
@@ -82,6 +90,14 @@ CREATE TABLE "analysis_jobs" (
             "idempotencyKey" LIKE 'legacy-report:%' AND
             "modelVersion" = 'legacy' AND
             "promptVersion" = 'legacy'
+        ) OR
+        (
+            "status" = 'FAILED' AND
+            "lastErrorCode" = 'PROVIDER_RECONCILIATION_REQUIRED' AND
+            "tokensSettledAt" IS NULL AND
+            "promptTokens" IS NULL AND
+            "completionTokens" IS NULL AND
+            "totalTokens" IS NULL
         )
     )
 );

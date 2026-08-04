@@ -13,6 +13,7 @@ import {
   TransitionAnalysisJobInput,
   canTransitionAnalysisJob,
 } from '../analysis-job.service';
+import { CURRENT_ANALYSIS_EXECUTION_VERSION } from '../../analysis/analysis-execution-version';
 
 describe('AnalysisJobService', () => {
   const repository = {
@@ -57,8 +58,6 @@ describe('AnalysisJobService', () => {
       userId: 7,
       repositoryId: 9,
       idempotencyKey: 'analysis-1',
-      modelVersion: 'gpt-5.1',
-      promptVersion: 'v2',
       sourceCursor: new Date('2026-07-22T00:00:00.000Z'),
     };
 
@@ -72,6 +71,7 @@ describe('AnalysisJobService', () => {
     const secondRecord = createCalls[1][0];
     expect(firstRecord.requestHash).toMatch(/^[0-9a-f]{64}$/);
     expect(secondRecord.requestHash).toBe(firstRecord.requestHash);
+    expect(firstRecord).toMatchObject(CURRENT_ANALYSIS_EXECUTION_VERSION);
   });
 
   it('rejects an invalid status transition', async () => {
@@ -107,6 +107,7 @@ describe('AnalysisJobService', () => {
       id: 'job-1',
       userId: 7,
       repositoryId: 9,
+      ...CURRENT_ANALYSIS_EXECUTION_VERSION,
       reservedTokens: null,
       promptTokens: null,
       completionTokens: null,
@@ -120,6 +121,7 @@ describe('AnalysisJobService', () => {
       id: 'job-1',
       userId: 7,
       repositoryId: 9,
+      ...CURRENT_ANALYSIS_EXECUTION_VERSION,
       reservedTokens: null,
       promptTokens: null,
       completionTokens: null,
@@ -282,6 +284,66 @@ describe('AnalysisJobService', () => {
 
     await expect(service.transition(input)).rejects.toBeInstanceOf(
       InvalidAnalysisJobInputError,
+    );
+  });
+
+  it('allows only provider reconciliation failures to remain unsettled', async () => {
+    repository.transitionStatus.mockResolvedValue(true);
+
+    await service.transition({
+      jobId: 'job-1',
+      fromStatus: AnalysisJobStatus.RUNNING,
+      toStatus: AnalysisJobStatus.FAILED,
+      expectedLeaseToken: 'lease-1',
+      expectedUserId: 7,
+      expectedRepositoryId: 9,
+      expectedReservedTokens: 20,
+      data: {
+        completedAt,
+        tokensSettledAt: null,
+        promptTokens: null,
+        completionTokens: null,
+        totalTokens: null,
+        providerRequestIds: ['chatcmpl_unknown_usage'],
+        errorCode: AnalysisJobFailureCode.PROVIDER_RECONCILIATION_REQUIRED,
+        errorRetryable: false,
+      },
+    });
+
+    const transitionCalls = repository.transitionStatus.mock
+      .calls as unknown as Array<[TransitionAnalysisJobRecordInput]>;
+    expect(transitionCalls[0][0].data).toMatchObject({
+      tokensSettledAt: null,
+      promptTokens: null,
+      completionTokens: null,
+      totalTokens: null,
+      lastErrorCode: 'PROVIDER_RECONCILIATION_REQUIRED',
+    });
+  });
+
+  it('rejects an unsettled ordinary failure', async () => {
+    const input = {
+      jobId: 'job-1',
+      fromStatus: AnalysisJobStatus.RUNNING,
+      toStatus: AnalysisJobStatus.FAILED,
+      expectedLeaseToken: 'lease-1',
+      expectedUserId: 7,
+      expectedRepositoryId: 9,
+      expectedReservedTokens: 20,
+      data: {
+        completedAt,
+        tokensSettledAt: null,
+        promptTokens: null,
+        completionTokens: null,
+        totalTokens: null,
+        providerRequestIds: [],
+        errorCode: AnalysisJobFailureCode.ANALYSIS_FAILED,
+        errorRetryable: false,
+      },
+    } as unknown as TransitionAnalysisJobInput;
+
+    await expect(service.transition(input)).rejects.toThrow(
+      'only non-retryable provider reconciliation failures may remain unsettled',
     );
   });
 
