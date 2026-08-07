@@ -35,6 +35,32 @@ interface ResolvedAnalysisJobExecutionContext
   reservedTokens: number | null;
 }
 
+export enum AnalysisJobExecutionOutcome {
+  SUCCEEDED = 'SUCCEEDED',
+  ANALYSIS_FAILED = 'ANALYSIS_FAILED',
+  INSUFFICIENT_TOKENS = 'INSUFFICIENT_TOKENS',
+  NO_ANALYZABLE_DATA = 'NO_ANALYZABLE_DATA',
+  RECONCILIATION_REQUIRED = 'RECONCILIATION_REQUIRED',
+  TOKEN_BUDGET_EXCEEDED = 'TOKEN_BUDGET_EXCEEDED',
+}
+
+export type AnalysisJobExecutionResult =
+  | {
+      outcome: AnalysisJobExecutionOutcome.SUCCEEDED;
+      metrics: ReturnType<MetricCalculatorService['calculate']>;
+    }
+  | {
+      outcome: AnalysisJobExecutionOutcome.NO_ANALYZABLE_DATA;
+    }
+  | {
+      outcome:
+        | AnalysisJobExecutionOutcome.ANALYSIS_FAILED
+        | AnalysisJobExecutionOutcome.INSUFFICIENT_TOKENS
+        | AnalysisJobExecutionOutcome.RECONCILIATION_REQUIRED
+        | AnalysisJobExecutionOutcome.TOKEN_BUDGET_EXCEEDED;
+      error: Error;
+    };
+
 const ZERO_TOKEN_USAGE: AnalysisTokenUsage = {
   promptTokens: 0,
   completionTokens: 0,
@@ -116,7 +142,17 @@ export class AnalysisJobRunnerService {
         startedAt,
       },
     });
-    return this.runAnalysisJob(data, { jobId: job.id, leaseToken });
+    const result = await this.runAnalysisJob(data, {
+      jobId: job.id,
+      leaseToken,
+    });
+    if (result.outcome === AnalysisJobExecutionOutcome.SUCCEEDED) {
+      return result.metrics;
+    }
+    if (result.outcome === AnalysisJobExecutionOutcome.NO_ANALYZABLE_DATA) {
+      return;
+    }
+    throw result.error;
   }
 
   /**
@@ -125,7 +161,7 @@ export class AnalysisJobRunnerService {
   async runAnalysisJob(
     data: CollectedDataDto,
     jobContext: AnalysisJobExecutionContext,
-  ) {
+  ): Promise<AnalysisJobExecutionResult> {
     const job = await this.analysisJobService.getRunningJobContext(
       jobContext.jobId,
       jobContext.leaseToken,
@@ -138,7 +174,7 @@ export class AnalysisJobRunnerService {
     };
     const providerCheckpoint = this.getProviderChargeCheckpoint(job);
     if (providerCheckpoint !== null) {
-      return this.terminateProviderReconciliation(
+      await this.terminateProviderReconciliation(
         job.userId,
         job.repositoryId,
         resolvedContext,
@@ -146,6 +182,13 @@ export class AnalysisJobRunnerService {
         providerCheckpoint.providerRequestId,
         providerCheckpoint.usage,
       );
+      return {
+        outcome: AnalysisJobExecutionOutcome.RECONCILIATION_REQUIRED,
+        error: new LlmProviderReconciliationError(
+          providerCheckpoint.providerRequestId,
+          providerCheckpoint.usage,
+        ),
+      };
     }
     assertSupportedAnalysisExecutionVersion(resolvedContext);
     return this.executeAnalysis(
@@ -160,8 +203,8 @@ export class AnalysisJobRunnerService {
     userId: number,
     repositoryId: number,
     data: CollectedDataDto,
-    jobContext?: ResolvedAnalysisJobExecutionContext,
-  ) {
+    jobContext: ResolvedAnalysisJobExecutionContext,
+  ): Promise<AnalysisJobExecutionResult> {
     this.logger.log(
       `Starting analysis for User ${userId}, Repo ${repositoryId}...`,
     );
@@ -176,71 +219,67 @@ export class AnalysisJobRunnerService {
       throw new Error(`User with ID ${userId} not found.`);
     }
 
-    if (jobContext === undefined && user.availableTokens <= 0) {
-      throw new Error(
-        `Insufficient tokens. Available: ${user.availableTokens}. Please recharge your tokens.`,
-      );
-    }
-
     try {
       // 1. Refine Data
       const refinedData = this.refiner.refine(data);
       if (refinedData.pullRequests.length === 0) {
         this.logger.warn('No meaningful data to analyze after refinement.');
-        if (jobContext !== undefined) {
-          await this.terminateWorkerJob(
-            userId,
-            repositoryId,
-            jobContext,
-            AnalysisJobFailureCode.NO_ANALYZABLE_DATA,
-            ZERO_TOKEN_USAGE,
-            jobContext.reservedTokens ?? 0,
-          );
-        }
-        return;
+        await this.terminateWorkerJob(
+          userId,
+          repositoryId,
+          jobContext,
+          AnalysisJobFailureCode.NO_ANALYZABLE_DATA,
+          ZERO_TOKEN_USAGE,
+          jobContext.reservedTokens ?? 0,
+        );
+        return { outcome: AnalysisJobExecutionOutcome.NO_ANALYZABLE_DATA };
       }
 
       // 2. Preprocess Data
       const preprocessedData = this.preprocessor.preprocess(refinedData);
 
-      let reservedTokens: number | null = null;
-      if (jobContext !== undefined) {
-        const reservation = this.llmProvider.estimateTokenReservationForData(
-          preprocessedData,
+      const reservation = this.llmProvider.estimateTokenReservationForData(
+        preprocessedData,
+        jobContext,
+      );
+      let reservedTokens: number;
+      try {
+        reservedTokens = await this.ensureWorkerTokenReservation(
+          userId,
+          repositoryId,
           jobContext,
+          reservation,
         );
-        try {
-          reservedTokens = await this.ensureWorkerTokenReservation(
+      } catch (error) {
+        if (error instanceof InsufficientAnalysisTokensError) {
+          await this.terminateWorkerJob(
             userId,
             repositoryId,
             jobContext,
-            reservation,
+            AnalysisJobFailureCode.INSUFFICIENT_TOKENS,
+            ZERO_TOKEN_USAGE,
+            0,
           );
-        } catch (error) {
-          if (error instanceof InsufficientAnalysisTokensError) {
-            await this.terminateWorkerJob(
-              userId,
-              repositoryId,
-              jobContext,
-              AnalysisJobFailureCode.INSUFFICIENT_TOKENS,
-              ZERO_TOKEN_USAGE,
-              0,
-            );
-            return;
-          }
-          if (error instanceof AnalysisTokenBudgetExceededError) {
-            await this.terminateWorkerJob(
-              userId,
-              repositoryId,
-              jobContext,
-              AnalysisJobFailureCode.TOKEN_BUDGET_EXCEEDED,
-              ZERO_TOKEN_USAGE,
-              jobContext.reservedTokens ?? 0,
-            );
-            return;
-          }
-          throw error;
+          return {
+            outcome: AnalysisJobExecutionOutcome.INSUFFICIENT_TOKENS,
+            error,
+          };
         }
+        if (error instanceof AnalysisTokenBudgetExceededError) {
+          await this.terminateWorkerJob(
+            userId,
+            repositoryId,
+            jobContext,
+            AnalysisJobFailureCode.TOKEN_BUDGET_EXCEEDED,
+            ZERO_TOKEN_USAGE,
+            jobContext.reservedTokens ?? 0,
+          );
+          return {
+            outcome: AnalysisJobExecutionOutcome.TOKEN_BUDGET_EXCEEDED,
+            error,
+          };
+        }
+        throw error;
       }
 
       // 3. LLM Analysis
@@ -251,10 +290,7 @@ export class AnalysisJobRunnerService {
           jobContext,
         );
       } catch (error) {
-        if (
-          jobContext !== undefined &&
-          error instanceof LlmProviderReconciliationError
-        ) {
+        if (error instanceof LlmProviderReconciliationError) {
           await this.checkpointAndTerminateProviderReconciliation(
             userId,
             repositoryId,
@@ -262,61 +298,70 @@ export class AnalysisJobRunnerService {
             reservedTokens,
             error,
           );
-          return;
+          return {
+            outcome: AnalysisJobExecutionOutcome.RECONCILIATION_REQUIRED,
+            error,
+          };
         }
-        throw error;
+        await this.terminateWorkerJob(
+          userId,
+          repositoryId,
+          jobContext,
+          AnalysisJobFailureCode.ANALYSIS_FAILED,
+          ZERO_TOKEN_USAGE,
+          reservedTokens,
+        );
+        return {
+          outcome: AnalysisJobExecutionOutcome.ANALYSIS_FAILED,
+          error: this.toError(error),
+        };
       }
       const { providerRequestId, result: llmResult, usage } = llmResponse;
       try {
         this.assertValidTokenUsage(usage);
       } catch (error) {
-        if (jobContext !== undefined) {
-          await this.terminateProviderReconciliation(
-            userId,
-            repositoryId,
-            jobContext,
-            reservedTokens,
-            providerRequestId,
-            null,
-          );
-          return;
-        }
-        throw error;
+        await this.terminateProviderReconciliation(
+          userId,
+          repositoryId,
+          jobContext,
+          reservedTokens,
+          providerRequestId,
+          null,
+        );
+        return {
+          outcome: AnalysisJobExecutionOutcome.RECONCILIATION_REQUIRED,
+          error: this.toError(error),
+        };
       }
-      if (jobContext !== undefined) {
-        if (reservedTokens === null) {
-          throw new InvalidAnalysisTokenUsageError();
-        }
-        try {
-          await this.analysisJobService.recordProviderCharge({
-            jobId: jobContext.jobId,
-            expectedLeaseToken: jobContext.leaseToken,
-            expectedUserId: userId,
-            expectedRepositoryId: repositoryId,
-            expectedReservedTokens: reservedTokens,
-            promptTokens: usage.promptTokens,
-            completionTokens: usage.completionTokens,
-            totalTokens: usage.totalTokens,
-            providerRequestId,
-          });
-        } catch (error) {
-          await this.handlePostBillingPersistenceFailure(
-            userId,
-            repositoryId,
-            jobContext,
-            reservedTokens,
-            providerRequestId,
-            usage,
-            error,
-          );
-          return;
-        }
+      try {
+        await this.analysisJobService.recordProviderCharge({
+          jobId: jobContext.jobId,
+          expectedLeaseToken: jobContext.leaseToken,
+          expectedUserId: userId,
+          expectedRepositoryId: repositoryId,
+          expectedReservedTokens: reservedTokens,
+          promptTokens: usage.promptTokens,
+          completionTokens: usage.completionTokens,
+          totalTokens: usage.totalTokens,
+          providerRequestId,
+        });
+      } catch (error) {
+        await this.handlePostBillingPersistenceFailure(
+          userId,
+          repositoryId,
+          jobContext,
+          reservedTokens,
+          providerRequestId,
+          usage,
+          error,
+        );
+        return {
+          outcome: AnalysisJobExecutionOutcome.RECONCILIATION_REQUIRED,
+          error: this.toError(error),
+        };
       }
-      if (
-        jobContext !== undefined &&
-        reservedTokens !== null &&
-        usage.totalTokens > reservedTokens
-      ) {
+      if (usage.totalTokens > reservedTokens) {
+        const error = new AnalysisTokenBudgetExceededError();
         await this.terminateProviderReconciliation(
           userId,
           repositoryId,
@@ -325,7 +370,10 @@ export class AnalysisJobRunnerService {
           providerRequestId,
           usage,
         );
-        return;
+        return {
+          outcome: AnalysisJobExecutionOutcome.TOKEN_BUDGET_EXCEEDED,
+          error,
+        };
       }
 
       // 4. Calculate Final Metrics
@@ -333,21 +381,21 @@ export class AnalysisJobRunnerService {
       try {
         metrics = this.calculator.calculate(llmResult);
       } catch (error) {
-        if (jobContext !== undefined) {
-          await this.terminateProviderReconciliation(
-            userId,
-            repositoryId,
-            jobContext,
-            reservedTokens,
-            providerRequestId,
-            usage,
-          );
-          return;
-        }
-        throw error;
+        await this.terminateProviderReconciliation(
+          userId,
+          repositoryId,
+          jobContext,
+          reservedTokens,
+          providerRequestId,
+          usage,
+        );
+        return {
+          outcome: AnalysisJobExecutionOutcome.RECONCILIATION_REQUIRED,
+          error: this.toError(error),
+        };
       }
 
-      // 5. Save Report, Update Stats, and Deduct Tokens in a Transaction
+      // 5. Save Report, Update Stats, and Settle Tokens in a Transaction
       try {
         await this.prisma.$transaction(async (tx) => {
           // A. Save Report
@@ -356,89 +404,67 @@ export class AnalysisJobRunnerService {
               userId,
               repositoryId,
               metrics: llmResult as unknown as Prisma.InputJsonValue,
-              ...(jobContext === undefined ? {} : { jobId: jobContext.jobId }),
+              jobId: jobContext.jobId,
             },
           });
 
           // B. Update User Stats
           await this.statService.updateStats(userId, metrics, tx);
 
-          // C. Deduct Tokens
-          if (reservedTokens === null) {
-            const tokenSettlement = await tx.user.updateMany({
-              where: {
-                id: userId,
-                availableTokens: { gte: usage.totalTokens },
-              },
-              data: {
-                availableTokens: {
-                  decrement: usage.totalTokens,
-                },
-              },
+          // C. Refund the unused reservation
+          const refundTokens = reservedTokens - usage.totalTokens;
+          if (refundTokens > 0) {
+            await tx.user.update({
+              where: { id: userId },
+              data: { availableTokens: { increment: refundTokens } },
             });
-            if (tokenSettlement.count !== 1) {
-              throw new InsufficientAnalysisTokensError();
-            }
-          } else {
-            const refundTokens = reservedTokens - usage.totalTokens;
-            if (refundTokens > 0) {
-              await tx.user.update({
-                where: { id: userId },
-                data: { availableTokens: { increment: refundTokens } },
-              });
-            }
           }
 
-          if (jobContext !== undefined) {
-            if (reservedTokens === null) {
-              throw new InvalidAnalysisTokenUsageError();
-            }
-            const completedAt = new Date();
-            await this.analysisJobService.transition(
-              {
-                jobId: jobContext.jobId,
-                fromStatus: AnalysisJobStatus.RUNNING,
-                toStatus: AnalysisJobStatus.SUCCEEDED,
-                expectedLeaseToken: jobContext.leaseToken,
-                expectedUserId: userId,
-                expectedRepositoryId: repositoryId,
-                expectedReservedTokens: reservedTokens,
-                data: {
-                  reportId: report.id,
-                  completedAt,
-                  tokensSettledAt: completedAt,
-                  promptTokens: usage.promptTokens,
-                  completionTokens: usage.completionTokens,
-                  totalTokens: usage.totalTokens,
-                  providerRequestIds: [providerRequestId],
-                },
+          const completedAt = new Date();
+          await this.analysisJobService.transition(
+            {
+              jobId: jobContext.jobId,
+              fromStatus: AnalysisJobStatus.RUNNING,
+              toStatus: AnalysisJobStatus.SUCCEEDED,
+              expectedLeaseToken: jobContext.leaseToken,
+              expectedUserId: userId,
+              expectedRepositoryId: repositoryId,
+              expectedReservedTokens: reservedTokens,
+              data: {
+                reportId: report.id,
+                completedAt,
+                tokensSettledAt: completedAt,
+                promptTokens: usage.promptTokens,
+                completionTokens: usage.completionTokens,
+                totalTokens: usage.totalTokens,
+                providerRequestIds: [providerRequestId],
               },
-              tx,
-            );
-          }
+            },
+            tx,
+          );
 
           this.logger.log(
-            `Deducted ${usage.totalTokens} tokens from User ${userId}.`,
+            `Settled ${usage.totalTokens} tokens for User ${userId}.`,
           );
         });
       } catch (error) {
-        if (jobContext !== undefined && reservedTokens !== null) {
-          await this.handlePostBillingPersistenceFailure(
-            userId,
-            repositoryId,
-            jobContext,
-            reservedTokens,
-            providerRequestId,
-            usage,
-            error,
-          );
-          return;
-        }
-        throw error;
+        await this.handlePostBillingPersistenceFailure(
+          userId,
+          repositoryId,
+          jobContext,
+          reservedTokens,
+          providerRequestId,
+          usage,
+          error,
+        );
+        return {
+          outcome: AnalysisJobExecutionOutcome.RECONCILIATION_REQUIRED,
+          error: this.toError(error),
+        };
       }
 
       this.logger.log('Analysis completed successfully.');
-      return metrics;
+      return { outcome: AnalysisJobExecutionOutcome.SUCCEEDED, metrics };
     } catch (error) {
       this.logger.error('Analysis failed', error);
       throw error;
@@ -777,6 +803,10 @@ export class AnalysisJobRunnerService {
 
   private getErrorName(error: unknown): string {
     return error instanceof Error ? error.name : 'UnknownError';
+  }
+
+  private toError(error: unknown): Error {
+    return error instanceof Error ? error : new Error('Analysis failed.');
   }
 
   private assertValidReservation(reservation: {

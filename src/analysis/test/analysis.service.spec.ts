@@ -1,7 +1,9 @@
 import { AnalysisJobService } from '../../analysis-job/analysis-job.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
+  AnalysisJobExecutionOutcome,
   AnalysisJobRunnerService,
+  InsufficientAnalysisTokensError,
   PostBillingAnalysisPersistenceError,
 } from '../analysis.service';
 import {
@@ -402,7 +404,7 @@ describe('AnalysisJobRunnerService', () => {
     const { analysisJobService, llmProvider, service, transaction } =
       createFixture({ availableTokens: 0, tokenUpdateCount: 0 });
 
-    await service.runAnalysisJob({} as never, jobContext);
+    const result = await service.runAnalysisJob({} as never, jobContext);
 
     expect(transaction.user.updateMany).toHaveBeenCalledWith({
       where: { id: 7, availableTokens: { gte: 20 } },
@@ -424,6 +426,32 @@ describe('AnalysisJobRunnerService', () => {
     expect(failureInput.toStatus).toBe('FAILED');
     expect(failureInput.expectedReservedTokens).toBeNull();
     expect(failureInput.data.errorCode).toBe('INSUFFICIENT_TOKENS');
+    expect(result.outcome).toBe(
+      AnalysisJobExecutionOutcome.INSUFFICIENT_TOKENS,
+    );
+    if (result.outcome !== AnalysisJobExecutionOutcome.INSUFFICIENT_TOKENS) {
+      throw new Error('Expected an insufficient-token execution result.');
+    }
+    expect(result.error).toBeInstanceOf(InsufficientAnalysisTokensError);
+  });
+
+  it('propagates insufficient tokens from the synchronous entry point after terminating the Job', async () => {
+    const { analysisJobService, llmProvider, service } = createFixture({
+      availableTokens: 0,
+      tokenUpdateCount: 0,
+    });
+
+    await expect(service.runAnalysis(7, 9, {} as never)).rejects.toBeInstanceOf(
+      InsufficientAnalysisTokensError,
+    );
+
+    expect(llmProvider.analyze).not.toHaveBeenCalled();
+    const transitionCalls = analysisJobService.transition.mock
+      .calls as unknown as Array<[{ toStatus: string; data?: object }]>;
+    expect(transitionCalls.map(([input]) => input.toStatus)).toEqual([
+      'RUNNING',
+      'FAILED',
+    ]);
   });
 
   it('terminates an empty worker analysis without reserving or calling the LLM', async () => {
@@ -646,14 +674,17 @@ describe('AnalysisJobRunnerService', () => {
   });
 
   it('durably reconciles a billed failure from the synchronous entry point', async () => {
+    const providerError = new LlmProviderReconciliationError(
+      'chatcmpl_sync_missing_usage',
+      null,
+    );
     const { analysisJobService, service } = createFixture({
-      analyzeError: new LlmProviderReconciliationError(
-        'chatcmpl_sync_missing_usage',
-        null,
-      ),
+      analyzeError: providerError,
     });
 
-    await service.runAnalysis(7, 9, {} as never);
+    await expect(service.runAnalysis(7, 9, {} as never)).rejects.toBe(
+      providerError,
+    );
 
     expect(analysisJobService.recordProviderCharge).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -670,6 +701,79 @@ describe('AnalysisJobRunnerService', () => {
       'RUNNING',
       'FAILED',
     ]);
+  });
+
+  it('refunds the full reservation and terminates an unbilled provider failure', async () => {
+    const providerError = new Error('OpenAI network unavailable');
+    const { analysisJobService, service, transaction } = createFixture({
+      reservedTokens: 20,
+      analyzeError: providerError,
+    });
+
+    const result = await service.runAnalysisJob({} as never, jobContext);
+
+    expect(result).toEqual({
+      outcome: AnalysisJobExecutionOutcome.ANALYSIS_FAILED,
+      error: providerError,
+    });
+    expect(transaction.analysisReport.create).not.toHaveBeenCalled();
+    expect(transaction.user.update).toHaveBeenCalledWith({
+      where: { id: 7 },
+      data: { availableTokens: { increment: 20 } },
+    });
+    expect(analysisJobService.recordProviderCharge).not.toHaveBeenCalled();
+    const transitionCalls = analysisJobService.transition.mock
+      .calls as unknown as Array<
+      [
+        {
+          toStatus: string;
+          data: {
+            errorCode: string;
+            providerRequestIds: string[];
+            totalTokens: number;
+            tokensSettledAt: Date | null;
+          };
+        },
+        unknown,
+      ]
+    >;
+    expect(transitionCalls[0][0]).toMatchObject({
+      toStatus: 'FAILED',
+      data: {
+        errorCode: 'ANALYSIS_FAILED',
+        providerRequestIds: [],
+        totalTokens: 0,
+      },
+    });
+    expect(transitionCalls[0][0].data.tokensSettledAt).toBeInstanceOf(Date);
+    expect(transitionCalls[0][1]).toBe(transaction);
+  });
+
+  it('does not leave a reservation when OPENAI_API_KEY is missing', async () => {
+    const providerError = new Error(
+      'OPENAI_API_KEY not found. LLM Analysis cannot proceed.',
+    );
+    const { analysisJobService, service, transaction } = createFixture({
+      analyzeError: providerError,
+    });
+
+    await expect(service.runAnalysis(7, 9, {} as never)).rejects.toBe(
+      providerError,
+    );
+
+    expect(transaction.user.update).toHaveBeenCalledWith({
+      where: { id: 7 },
+      data: { availableTokens: { increment: 20 } },
+    });
+    const transitionCalls = analysisJobService.transition.mock
+      .calls as unknown as Array<
+      [{ toStatus: string; data?: { errorCode?: string } }]
+    >;
+    expect(transitionCalls.map(([input]) => input.toStatus)).toEqual([
+      'RUNNING',
+      'FAILED',
+    ]);
+    expect(transitionCalls[1][0].data?.errorCode).toBe('ANALYSIS_FAILED');
   });
 
   it('returns a non-retryable error when a failed provider response cannot be checkpointed or terminated', async () => {
