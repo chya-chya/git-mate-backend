@@ -11,20 +11,21 @@ datasource db {
 }
 
 model User {
-  id                 Int      @id @default(autoincrement())
-  githubId           String   @unique
+  id                 Int        @id @default(autoincrement())
+  githubId           String     @unique
   username           String
   avatarUrl          String?
   githubToken        String? // Encrypted GitHub Access Token
   hashedRefreshToken String? // Hashed Refresh Token
   status             UserStatus @default(ACTIVE)
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
-  availableTokens    Int      @default(100000)
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+  availableTokens    Int        @default(100000)
 
   stats                  UserStat?
   repositories           Repository[]
   reports                AnalysisReport[]
+  analysisJobs           AnalysisJob[]
   githubInstallations    UserGithubInstallation[]
   githubAppInstallStates GithubAppInstallState[]
 
@@ -118,6 +119,7 @@ model UserStat {
   knowledgeSharingScore   Float @default(0)
   technicalInfluenceScore Float @default(0)
   codeStabilityScore      Float @default(0)
+  analysisCount           Int   @default(0)
 
   updatedAt DateTime @updatedAt
 
@@ -134,7 +136,8 @@ model Repository {
   ownerId Int
   owner   User @relation(fields: [ownerId], references: [id])
 
-  reports AnalysisReport[]
+  reports      AnalysisReport[]
+  analysisJobs AnalysisJob[]
 
   @@map("repositories")
 }
@@ -151,8 +154,79 @@ model AnalysisReport {
 
   metrics Json? // Stores detailed analysis data from LLM
 
+  jobId String?      @unique
+  job   AnalysisJob? @relation(fields: [jobId], references: [id], onDelete: SetNull)
+
   isShared      Boolean @default(false)
   representedBy User?   @relation("RepresentativeReport")
 
   @@map("analysis_reports")
+}
+
+enum AnalysisJobStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
+enum AnalysisJobStage {
+  WAITING
+  COLLECTING
+  RESERVING_TOKENS
+  ANALYZING
+  SAVING
+}
+
+model AnalysisJob {
+  id       String            @id @default(uuid())
+  status   AnalysisJobStatus @default(QUEUED)
+  stage    AnalysisJobStage? @default(WAITING)
+  progress Int               @default(0)
+
+  userId         Int
+  repositoryId   Int
+  idempotencyKey String
+  requestHash    String
+  sourceCursor   DateTime?
+  modelVersion   String    @default("gpt-5-mini")
+  promptVersion  String    @default("analysis-v1")
+
+  estimatedTokens    Int?
+  reservedTokens     Int?
+  promptTokens       Int?
+  completionTokens   Int?
+  totalTokens        Int?
+  tokensSettledAt    DateTime?
+  providerRequestIds String[]  @default([])
+
+  publishAttempts    Int       @default(0)
+  messagePublishedAt DateTime?
+  nextPublishAt      DateTime?
+
+  attemptCount   Int       @default(0)
+  maxAttempts    Int       @default(5)
+  leaseToken     String?
+  leaseExpiresAt DateTime?
+  heartbeatAt    DateTime?
+
+  lastErrorCode    String?
+  lastErrorMessage String?
+  errorRetryable   Boolean?
+
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  user       User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  repository Repository      @relation(fields: [repositoryId], references: [id], onDelete: Restrict)
+  report     AnalysisReport?
+
+  @@unique([userId, idempotencyKey])
+  @@index([status, nextPublishAt, messagePublishedAt])
+  @@index([status, leaseExpiresAt])
+  @@index([userId, createdAt])
+  @@index([repositoryId, createdAt])
+  @@map("analysis_jobs")
 }

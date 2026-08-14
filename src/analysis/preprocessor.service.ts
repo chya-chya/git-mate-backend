@@ -50,9 +50,9 @@ export class PreprocessorService {
 
     // 4. Basic Anonymization (Masking emails/keys)
     cleaned = cleaned
-      .replace(/[\w\.-]+@[\w\.-]+\.\w{2,4}/g, '***@***.***') // Email
+      .replace(/[\w.-]+@[\w.-]+\.\w{2,4}/g, '***@***.***') // Email
       .replace(
-        /(xox[p|b|o|r]-[0-9]{12}-[0-9]{12}-[0-9]{12}-[a-z0-9]{32})/gi,
+        /(xox[pbor]-[0-9]{12}-[0-9]{12}-[0-9]{12}-[a-z0-9]{32})/gi,
         '[REDACTED_API_KEY]',
       ); // Slack-like key example
 

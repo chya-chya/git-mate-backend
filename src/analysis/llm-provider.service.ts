@@ -3,6 +3,17 @@ import { ConfigService } from '@nestjs/config';
 import OpenAI from 'openai';
 import { getEncoding } from 'js-tiktoken';
 import { CollectedDataDto } from '../collection/types/github-api.types';
+import {
+  AnalysisExecutionVersion,
+  CURRENT_ANALYSIS_EXECUTION_VERSION,
+  assertSupportedAnalysisExecutionVersion,
+} from './analysis-execution-version';
+import {
+  isValidAnalysisTokenUsage,
+  isValidProviderRequestId,
+} from './analysis-billing-metadata';
+
+export const MAX_ANALYSIS_COMPLETION_TOKENS = 8192;
 
 export interface MetricEvaluation {
   score: number;
@@ -23,14 +34,46 @@ export interface LlmAnalysisResult {
   summary: string;
 }
 
-export interface LlmAnalysisResponse {
-  result: LlmAnalysisResult;
-  usage: {
-    promptTokens: number;
-    completionTokens: number;
-    totalTokens: number;
-  };
+export interface LlmTokenUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
 }
+
+export interface LlmAnalysisResponse {
+  providerRequestId: string;
+  result: LlmAnalysisResult;
+  usage: LlmTokenUsage;
+}
+
+export class LlmProviderReconciliationError extends Error {
+  constructor(
+    readonly providerRequestId: string | null,
+    readonly usage: LlmTokenUsage | null,
+  ) {
+    super('A billed LLM response requires reconciliation.');
+    this.name = LlmProviderReconciliationError.name;
+  }
+}
+
+export class InvalidLlmProviderResponseError extends LlmProviderReconciliationError {
+  constructor(providerRequestId: string | null) {
+    super(providerRequestId, null);
+    this.name = InvalidLlmProviderResponseError.name;
+  }
+}
+
+export class LlmTokenEstimationError extends Error {
+  constructor(options?: ErrorOptions) {
+    super('Failed to estimate LLM prompt tokens.', options);
+    this.name = LlmTokenEstimationError.name;
+  }
+}
+
+type AnalysisMessage = {
+  role: 'system' | 'user';
+  content: string;
+};
 
 @Injectable()
 export class LlmProviderService {
@@ -103,31 +146,17 @@ export class LlmProviderService {
 JSON 이스케이프 규칙을 철저히 준수하세요. 문자열 내에 쌍따옴표(")가 들어갈 경우 반드시 \\" 로 이스케이프하고, 줄바꿈은 \\n으로 처리하여 유효한 JSON 포맷을 유지하십시오. 코드 블록(\`\`\`) 없이 순수 JSON 객체만 반환하세요.`;
   }
 
-  async analyze(data: CollectedDataDto): Promise<LlmAnalysisResponse> {
+  async analyze(
+    data: CollectedDataDto,
+    version: AnalysisExecutionVersion = CURRENT_ANALYSIS_EXECUTION_VERSION,
+  ): Promise<LlmAnalysisResponse> {
+    assertSupportedAnalysisExecutionVersion(version);
     if (!this.openai) {
       throw new Error('OPENAI_API_KEY not found. LLM Analysis cannot proceed.');
     }
 
-    const rawDataPrompt = JSON.stringify(data);
-    const systemPrompt = this.buildSystemPrompt(
-      data.owner,
-      data.repo,
-      data.targetUser,
-    );
-    const languageInstruction =
-      '\n\n**중요:** 모든 분석 근거(reason)와 요약(summary)은 반드시 **한국어**로 작성하세요.';
-
     try {
-      const messages: any[] = [
-        {
-          role: 'system',
-          content: systemPrompt + languageInstruction,
-        },
-        {
-          role: 'user',
-          content: `다음 데이터를 분석하여 JSON 형식으로 응답하세요: \n${rawDataPrompt}`,
-        },
-      ];
+      const messages = this.buildAnalysisMessages(data, version);
 
       // 토큰 측정 및 제한 확인 (10만 토큰)
       const estimatedTokens = this.getEstimatedTokenCount(messages);
@@ -138,29 +167,41 @@ JSON 이스케이프 규칙을 철저히 준수하세요. 문자열 내에 쌍�
       }
 
       const response = await this.openai.chat.completions.create({
-        model: 'gpt-5-mini', // 최신 모델 사용 권장
-        messages: messages,
+        model: version.modelVersion,
+        messages,
+        max_completion_tokens: MAX_ANALYSIS_COMPLETION_TOKENS,
         // temperature: 0, // 결과의 일관성 및 재현성을 위해 0으로 설정
         response_format: { type: 'json_object' },
       });
 
-      const usage = response.usage;
-      if (usage) {
-        this.logger.log(
-          `LLM Actual Usage - Prompt: ${usage.prompt_tokens}, Completion: ${usage.completion_tokens}, Total: ${usage.total_tokens}`,
-        );
+      const providerRequestId = this.assertProviderRequestId(response.id);
+      const usage = this.assertProviderUsage(response.usage, providerRequestId);
+      this.logger.log(
+        `LLM Actual Usage - Prompt: ${usage.prompt_tokens}, Completion: ${usage.completion_tokens}, Total: ${usage.total_tokens}`,
+      );
+
+      let result: LlmAnalysisResult;
+      try {
+        const content = response.choices.at(0)?.message.content;
+        if (typeof content !== 'string' || content.length === 0) {
+          throw new Error('The provider response content is missing.');
+        }
+        result = JSON.parse(content) as LlmAnalysisResult;
+      } catch {
+        throw new LlmProviderReconciliationError(providerRequestId, {
+          promptTokens: usage.prompt_tokens,
+          completionTokens: usage.completion_tokens,
+          totalTokens: usage.total_tokens,
+        });
       }
 
-      const result = JSON.parse(
-        response.choices[0].message.content || '{}',
-      ) as LlmAnalysisResult;
-
       return {
+        providerRequestId,
         result,
         usage: {
-          promptTokens: usage?.prompt_tokens || 0,
-          completionTokens: usage?.completion_tokens || 0,
-          totalTokens: usage?.total_tokens || 0,
+          promptTokens: usage.prompt_tokens,
+          completionTokens: usage.completion_tokens,
+          totalTokens: usage.total_tokens,
         },
       };
     } catch (error) {
@@ -169,7 +210,34 @@ JSON 이스케이프 규칙을 철저히 준수하세요. 문자열 내에 쌍�
     }
   }
 
-  estimateTokensForData(data: CollectedDataDto): number {
+  estimateTokensForData(
+    data: CollectedDataDto,
+    version: AnalysisExecutionVersion = CURRENT_ANALYSIS_EXECUTION_VERSION,
+  ): number {
+    const messages = this.buildAnalysisMessages(data, version);
+
+    return this.getEstimatedTokenCount(messages);
+  }
+
+  estimateTokenReservationForData(
+    data: CollectedDataDto,
+    version: AnalysisExecutionVersion = CURRENT_ANALYSIS_EXECUTION_VERSION,
+  ): {
+    estimatedTokens: number;
+    reservedTokens: number;
+  } {
+    const estimatedTokens = this.estimateTokensForData(data, version);
+    return {
+      estimatedTokens,
+      reservedTokens: estimatedTokens + MAX_ANALYSIS_COMPLETION_TOKENS,
+    };
+  }
+
+  private buildAnalysisMessages(
+    data: CollectedDataDto,
+    version: AnalysisExecutionVersion,
+  ): AnalysisMessage[] {
+    assertSupportedAnalysisExecutionVersion(version);
     const rawDataPrompt = JSON.stringify(data);
     const systemPrompt = this.buildSystemPrompt(
       data.owner,
@@ -179,7 +247,7 @@ JSON 이스케이프 규칙을 철저히 준수하세요. 문자열 내에 쌍�
     const languageInstruction =
       '\n\n**중요:** 모든 분석 근거(reason)와 요약(summary)은 반드시 **한국어**로 작성하세요.';
 
-    const messages: any[] = [
+    return [
       {
         role: 'system',
         content: systemPrompt + languageInstruction,
@@ -189,26 +257,56 @@ JSON 이스케이프 규칙을 철저히 준수하세요. 문자열 내에 쌍�
         content: `다음 데이터를 분석하여 JSON 형식으로 응답하세요: \n${rawDataPrompt}`,
       },
     ];
-
-    return this.getEstimatedTokenCount(messages);
   }
 
-  private getEstimatedTokenCount(messages: any[]): number {
+  private getEstimatedTokenCount(messages: readonly AnalysisMessage[]): number {
     try {
       const encoding = getEncoding('cl100k_base');
       let totalTokens = 0;
 
       for (const message of messages) {
         totalTokens += 4;
-        totalTokens += encoding.encode(message.content || '').length;
+        totalTokens += encoding.encode(message.content).length;
       }
       totalTokens += 3;
 
       this.logger.log(`Estimated Prompt Tokens: ${totalTokens}`);
       return totalTokens;
-    } catch (e) {
-      this.logger.warn('Failed to estimate tokens', e);
-      return 0;
+    } catch (error) {
+      this.logger.error('Failed to estimate tokens', error);
+      throw new LlmTokenEstimationError({ cause: error });
     }
+  }
+
+  private assertProviderRequestId(value: unknown): string {
+    if (!isValidProviderRequestId(value)) {
+      throw new InvalidLlmProviderResponseError(null);
+    }
+    return value;
+  }
+
+  private assertProviderUsage(
+    usage:
+      | {
+          prompt_tokens: number;
+          completion_tokens: number;
+          total_tokens: number;
+        }
+      | null
+      | undefined,
+    providerRequestId: string,
+  ): NonNullable<typeof usage> {
+    if (usage === null || usage === undefined) {
+      throw new InvalidLlmProviderResponseError(providerRequestId);
+    }
+    const normalizedUsage = {
+      promptTokens: usage.prompt_tokens,
+      completionTokens: usage.completion_tokens,
+      totalTokens: usage.total_tokens,
+    };
+    if (!isValidAnalysisTokenUsage(normalizedUsage)) {
+      throw new InvalidLlmProviderResponseError(providerRequestId);
+    }
+    return usage;
   }
 }

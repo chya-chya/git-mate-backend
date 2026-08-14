@@ -1,15 +1,111 @@
+import { randomUUID } from 'node:crypto';
 import { Injectable, Logger } from '@nestjs/common';
+import { AnalysisJobStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { RefinerService } from './refiner.service';
 import { PreprocessorService } from './preprocessor.service';
-import { LlmProviderService } from './llm-provider.service';
+import {
+  LlmAnalysisResponse,
+  LlmProviderReconciliationError,
+  LlmProviderService,
+} from './llm-provider.service';
 import { MetricCalculatorService } from './metric-calculator.service';
 import { StatService } from './stat.service';
 import { CollectedDataDto } from '../collection/types/github-api.types';
+import {
+  AnalysisJobFailureCode,
+  AnalysisJobService,
+} from '../analysis-job/analysis-job.service';
+import {
+  AnalysisExecutionVersion,
+  assertSupportedAnalysisExecutionVersion,
+} from './analysis-execution-version';
+import {
+  AnalysisTokenUsage,
+  isValidAnalysisTokenUsage,
+} from './analysis-billing-metadata';
+
+export interface AnalysisJobExecutionContext {
+  jobId: string;
+  leaseToken: string;
+}
+
+interface ResolvedAnalysisJobExecutionContext
+  extends AnalysisJobExecutionContext, AnalysisExecutionVersion {
+  reservedTokens: number | null;
+}
+
+export enum AnalysisJobExecutionOutcome {
+  SUCCEEDED = 'SUCCEEDED',
+  ANALYSIS_FAILED = 'ANALYSIS_FAILED',
+  INSUFFICIENT_TOKENS = 'INSUFFICIENT_TOKENS',
+  NO_ANALYZABLE_DATA = 'NO_ANALYZABLE_DATA',
+  RECONCILIATION_REQUIRED = 'RECONCILIATION_REQUIRED',
+  TOKEN_BUDGET_EXCEEDED = 'TOKEN_BUDGET_EXCEEDED',
+}
+
+export type AnalysisJobExecutionResult =
+  | {
+      outcome: AnalysisJobExecutionOutcome.SUCCEEDED;
+      metrics: ReturnType<MetricCalculatorService['calculate']>;
+    }
+  | {
+      outcome: AnalysisJobExecutionOutcome.NO_ANALYZABLE_DATA;
+    }
+  | {
+      outcome:
+        | AnalysisJobExecutionOutcome.ANALYSIS_FAILED
+        | AnalysisJobExecutionOutcome.INSUFFICIENT_TOKENS
+        | AnalysisJobExecutionOutcome.RECONCILIATION_REQUIRED
+        | AnalysisJobExecutionOutcome.TOKEN_BUDGET_EXCEEDED;
+      error: Error;
+    };
+
+const ZERO_TOKEN_USAGE: AnalysisTokenUsage = {
+  promptTokens: 0,
+  completionTokens: 0,
+  totalTokens: 0,
+};
+
+export class InsufficientAnalysisTokensError extends Error {
+  constructor() {
+    super('Insufficient tokens to settle the analysis result.');
+    this.name = InsufficientAnalysisTokensError.name;
+  }
+}
+
+export class InvalidAnalysisTokenUsageError extends Error {
+  constructor() {
+    super('Analysis token usage is invalid.');
+    this.name = InvalidAnalysisTokenUsageError.name;
+  }
+}
+
+export class AnalysisTokenBudgetExceededError extends Error {
+  constructor() {
+    super('Analysis token usage exceeded its reserved budget.');
+    this.name = AnalysisTokenBudgetExceededError.name;
+  }
+}
+
+export class PostBillingAnalysisPersistenceError extends Error {
+  readonly retryable = false;
+
+  constructor(
+    readonly jobId: string,
+    readonly providerRequestId: string | null,
+    readonly usage: AnalysisTokenUsage | null,
+  ) {
+    super(
+      'Billed analysis metadata could not be persisted for reconciliation.',
+    );
+    this.name = PostBillingAnalysisPersistenceError.name;
+  }
+}
 
 @Injectable()
-export class AnalysisService {
-  private readonly logger = new Logger(AnalysisService.name);
+export class AnalysisJobRunnerService {
+  private readonly logger = new Logger(AnalysisJobRunnerService.name);
 
   constructor(
     private prisma: PrismaService,
@@ -18,6 +114,7 @@ export class AnalysisService {
     private llmProvider: LlmProviderService,
     private calculator: MetricCalculatorService,
     private statService: StatService,
+    private analysisJobService: AnalysisJobService,
   ) {}
 
   /**
@@ -28,6 +125,86 @@ export class AnalysisService {
     repositoryId: number,
     data: CollectedDataDto,
   ) {
+    const leaseToken = randomUUID();
+    const startedAt = new Date();
+    const job = await this.analysisJobService.create({
+      userId,
+      repositoryId,
+      idempotencyKey: `sync:${randomUUID()}`,
+    });
+    await this.analysisJobService.transition({
+      jobId: job.id,
+      fromStatus: AnalysisJobStatus.QUEUED,
+      toStatus: AnalysisJobStatus.RUNNING,
+      data: {
+        leaseToken,
+        leaseExpiresAt: new Date(startedAt.getTime() + 15 * 60 * 1000),
+        startedAt,
+      },
+    });
+    const result = await this.runAnalysisJob(data, {
+      jobId: job.id,
+      leaseToken,
+    });
+    if (result.outcome === AnalysisJobExecutionOutcome.SUCCEEDED) {
+      return result.metrics;
+    }
+    if (result.outcome === AnalysisJobExecutionOutcome.NO_ANALYZABLE_DATA) {
+      return;
+    }
+    throw result.error;
+  }
+
+  /**
+   * Run the worker pipeline and atomically commit its durable job result.
+   */
+  async runAnalysisJob(
+    data: CollectedDataDto,
+    jobContext: AnalysisJobExecutionContext,
+  ): Promise<AnalysisJobExecutionResult> {
+    const job = await this.analysisJobService.getRunningJobContext(
+      jobContext.jobId,
+      jobContext.leaseToken,
+    );
+    const resolvedContext = {
+      ...jobContext,
+      reservedTokens: job.reservedTokens,
+      modelVersion: job.modelVersion,
+      promptVersion: job.promptVersion,
+    };
+    const providerCheckpoint = this.getProviderChargeCheckpoint(job);
+    if (providerCheckpoint !== null) {
+      await this.terminateProviderReconciliation(
+        job.userId,
+        job.repositoryId,
+        resolvedContext,
+        job.reservedTokens,
+        providerCheckpoint.providerRequestId,
+        providerCheckpoint.usage,
+      );
+      return {
+        outcome: AnalysisJobExecutionOutcome.RECONCILIATION_REQUIRED,
+        error: new LlmProviderReconciliationError(
+          providerCheckpoint.providerRequestId,
+          providerCheckpoint.usage,
+        ),
+      };
+    }
+    assertSupportedAnalysisExecutionVersion(resolvedContext);
+    return this.executeAnalysis(
+      job.userId,
+      job.repositoryId,
+      data,
+      resolvedContext,
+    );
+  }
+
+  private async executeAnalysis(
+    userId: number,
+    repositoryId: number,
+    data: CollectedDataDto,
+    jobContext: ResolvedAnalysisJobExecutionContext,
+  ): Promise<AnalysisJobExecutionResult> {
     this.logger.log(
       `Starting analysis for User ${userId}, Repo ${repositoryId}...`,
     );
@@ -42,89 +219,658 @@ export class AnalysisService {
       throw new Error(`User with ID ${userId} not found.`);
     }
 
-    if (user.availableTokens <= 0) {
-      throw new Error(
-        `Insufficient tokens. Available: ${user.availableTokens}. Please recharge your tokens.`,
-      );
-    }
-
     try {
       // 1. Refine Data
       const refinedData = this.refiner.refine(data);
       if (refinedData.pullRequests.length === 0) {
         this.logger.warn('No meaningful data to analyze after refinement.');
-        return;
+        await this.terminateWorkerJob(
+          userId,
+          repositoryId,
+          jobContext,
+          AnalysisJobFailureCode.NO_ANALYZABLE_DATA,
+          ZERO_TOKEN_USAGE,
+          jobContext.reservedTokens ?? 0,
+        );
+        return { outcome: AnalysisJobExecutionOutcome.NO_ANALYZABLE_DATA };
       }
 
       // 2. Preprocess Data
       const preprocessedData = this.preprocessor.preprocess(refinedData);
 
-      // 3. LLM Analysis
-      const llmResponse = await this.llmProvider.analyze(preprocessedData);
-      const { result: llmResult, usage } = llmResponse;
-
-      // 4. Calculate Final Metrics
-      const metrics = this.calculator.calculate(llmResult);
-
-      // 5. Save Report, Update Stats, and Deduct Tokens in a Transaction
-      await (this.prisma as any).$transaction(async (tx) => {
-        // A. Save Report
-        await tx.analysisReport.create({
-          data: {
+      const reservation = this.llmProvider.estimateTokenReservationForData(
+        preprocessedData,
+        jobContext,
+      );
+      let reservedTokens: number;
+      try {
+        reservedTokens = await this.ensureWorkerTokenReservation(
+          userId,
+          repositoryId,
+          jobContext,
+          reservation,
+        );
+      } catch (error) {
+        if (error instanceof InsufficientAnalysisTokensError) {
+          await this.terminateWorkerJob(
             userId,
             repositoryId,
-            metrics: llmResult as any,
-          },
-        });
+            jobContext,
+            AnalysisJobFailureCode.INSUFFICIENT_TOKENS,
+            ZERO_TOKEN_USAGE,
+            0,
+          );
+          return {
+            outcome: AnalysisJobExecutionOutcome.INSUFFICIENT_TOKENS,
+            error,
+          };
+        }
+        if (error instanceof AnalysisTokenBudgetExceededError) {
+          await this.terminateWorkerJob(
+            userId,
+            repositoryId,
+            jobContext,
+            AnalysisJobFailureCode.TOKEN_BUDGET_EXCEEDED,
+            ZERO_TOKEN_USAGE,
+            jobContext.reservedTokens ?? 0,
+          );
+          return {
+            outcome: AnalysisJobExecutionOutcome.TOKEN_BUDGET_EXCEEDED,
+            error,
+          };
+        }
+        throw error;
+      }
 
-        // B. Update User Stats
-        await this.statService.updateStats(userId, metrics);
-
-        // C. Deduct Tokens
-        await tx.user.update({
-          where: { id: userId },
-          data: {
-            availableTokens: {
-              decrement: usage.totalTokens,
-            },
-          },
-        });
-
-        this.logger.log(
-          `Deducted ${usage.totalTokens} tokens from User ${userId}.`,
+      // 3. LLM Analysis
+      let llmResponse: LlmAnalysisResponse;
+      try {
+        llmResponse = await this.llmProvider.analyze(
+          preprocessedData,
+          jobContext,
         );
-      });
+      } catch (error) {
+        if (error instanceof LlmProviderReconciliationError) {
+          await this.checkpointAndTerminateProviderReconciliation(
+            userId,
+            repositoryId,
+            jobContext,
+            reservedTokens,
+            error,
+          );
+          return {
+            outcome: AnalysisJobExecutionOutcome.RECONCILIATION_REQUIRED,
+            error,
+          };
+        }
+        await this.terminateWorkerJob(
+          userId,
+          repositoryId,
+          jobContext,
+          AnalysisJobFailureCode.ANALYSIS_FAILED,
+          ZERO_TOKEN_USAGE,
+          reservedTokens,
+        );
+        return {
+          outcome: AnalysisJobExecutionOutcome.ANALYSIS_FAILED,
+          error: this.toError(error),
+        };
+      }
+      const { providerRequestId, result: llmResult, usage } = llmResponse;
+      try {
+        this.assertValidTokenUsage(usage);
+      } catch (error) {
+        await this.terminateProviderReconciliation(
+          userId,
+          repositoryId,
+          jobContext,
+          reservedTokens,
+          providerRequestId,
+          null,
+        );
+        return {
+          outcome: AnalysisJobExecutionOutcome.RECONCILIATION_REQUIRED,
+          error: this.toError(error),
+        };
+      }
+      try {
+        await this.analysisJobService.recordProviderCharge({
+          jobId: jobContext.jobId,
+          expectedLeaseToken: jobContext.leaseToken,
+          expectedUserId: userId,
+          expectedRepositoryId: repositoryId,
+          expectedReservedTokens: reservedTokens,
+          promptTokens: usage.promptTokens,
+          completionTokens: usage.completionTokens,
+          totalTokens: usage.totalTokens,
+          providerRequestId,
+        });
+      } catch (error) {
+        await this.handlePostBillingPersistenceFailure(
+          userId,
+          repositoryId,
+          jobContext,
+          reservedTokens,
+          providerRequestId,
+          usage,
+          error,
+        );
+        return {
+          outcome: AnalysisJobExecutionOutcome.RECONCILIATION_REQUIRED,
+          error: this.toError(error),
+        };
+      }
+      if (usage.totalTokens > reservedTokens) {
+        const error = new AnalysisTokenBudgetExceededError();
+        await this.terminateProviderReconciliation(
+          userId,
+          repositoryId,
+          jobContext,
+          reservedTokens,
+          providerRequestId,
+          usage,
+        );
+        return {
+          outcome: AnalysisJobExecutionOutcome.TOKEN_BUDGET_EXCEEDED,
+          error,
+        };
+      }
+
+      // 4. Calculate Final Metrics
+      let metrics: ReturnType<MetricCalculatorService['calculate']>;
+      try {
+        metrics = this.calculator.calculate(llmResult);
+      } catch (error) {
+        await this.terminateProviderReconciliation(
+          userId,
+          repositoryId,
+          jobContext,
+          reservedTokens,
+          providerRequestId,
+          usage,
+        );
+        return {
+          outcome: AnalysisJobExecutionOutcome.RECONCILIATION_REQUIRED,
+          error: this.toError(error),
+        };
+      }
+
+      // 5. Save Report, Update Stats, and Settle Tokens in a Transaction
+      try {
+        await this.prisma.$transaction(async (tx) => {
+          // A. Save Report
+          const report = await tx.analysisReport.create({
+            data: {
+              userId,
+              repositoryId,
+              metrics: llmResult as unknown as Prisma.InputJsonValue,
+              jobId: jobContext.jobId,
+            },
+          });
+
+          // B. Update User Stats
+          await this.statService.updateStats(userId, metrics, tx);
+
+          // C. Refund the unused reservation
+          const refundTokens = reservedTokens - usage.totalTokens;
+          if (refundTokens > 0) {
+            await tx.user.update({
+              where: { id: userId },
+              data: { availableTokens: { increment: refundTokens } },
+            });
+          }
+
+          const completedAt = new Date();
+          await this.analysisJobService.transition(
+            {
+              jobId: jobContext.jobId,
+              fromStatus: AnalysisJobStatus.RUNNING,
+              toStatus: AnalysisJobStatus.SUCCEEDED,
+              expectedLeaseToken: jobContext.leaseToken,
+              expectedUserId: userId,
+              expectedRepositoryId: repositoryId,
+              expectedReservedTokens: reservedTokens,
+              data: {
+                reportId: report.id,
+                completedAt,
+                tokensSettledAt: completedAt,
+                promptTokens: usage.promptTokens,
+                completionTokens: usage.completionTokens,
+                totalTokens: usage.totalTokens,
+                providerRequestIds: [providerRequestId],
+              },
+            },
+            tx,
+          );
+
+          this.logger.log(
+            `Settled ${usage.totalTokens} tokens for User ${userId}.`,
+          );
+        });
+      } catch (error) {
+        await this.handlePostBillingPersistenceFailure(
+          userId,
+          repositoryId,
+          jobContext,
+          reservedTokens,
+          providerRequestId,
+          usage,
+          error,
+        );
+        return {
+          outcome: AnalysisJobExecutionOutcome.RECONCILIATION_REQUIRED,
+          error: this.toError(error),
+        };
+      }
 
       this.logger.log('Analysis completed successfully.');
-      return metrics;
+      return { outcome: AnalysisJobExecutionOutcome.SUCCEEDED, metrics };
     } catch (error) {
       this.logger.error('Analysis failed', error);
       throw error;
     }
   }
 
+  private async ensureWorkerTokenReservation(
+    userId: number,
+    repositoryId: number,
+    jobContext: ResolvedAnalysisJobExecutionContext,
+    reservation: { estimatedTokens: number; reservedTokens: number },
+  ): Promise<number> {
+    this.assertValidReservation(reservation);
+    if (jobContext.reservedTokens !== null) {
+      if (jobContext.reservedTokens < reservation.reservedTokens) {
+        throw new AnalysisTokenBudgetExceededError();
+      }
+      return jobContext.reservedTokens;
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      const debit = await tx.user.updateMany({
+        where: {
+          id: userId,
+          availableTokens: { gte: reservation.reservedTokens },
+        },
+        data: {
+          availableTokens: { decrement: reservation.reservedTokens },
+        },
+      });
+      if (debit.count !== 1) {
+        throw new InsufficientAnalysisTokensError();
+      }
+      await this.analysisJobService.reserveTokens(
+        {
+          jobId: jobContext.jobId,
+          expectedLeaseToken: jobContext.leaseToken,
+          expectedUserId: userId,
+          expectedRepositoryId: repositoryId,
+          estimatedTokens: reservation.estimatedTokens,
+          reservedTokens: reservation.reservedTokens,
+        },
+        tx,
+      );
+    });
+    jobContext.reservedTokens = reservation.reservedTokens;
+    return reservation.reservedTokens;
+  }
+
+  private async terminateWorkerJob(
+    userId: number,
+    repositoryId: number,
+    jobContext: ResolvedAnalysisJobExecutionContext,
+    errorCode: AnalysisJobFailureCode,
+    usage: AnalysisTokenUsage | null,
+    refundTokens: number,
+    providerRequestIds: string[] = [],
+    options: {
+      tokensSettled?: boolean;
+      additionalDebitTokens?: number;
+    } = {},
+  ): Promise<void> {
+    const completedAt = new Date();
+    await this.prisma.$transaction(async (tx) => {
+      let terminalErrorCode = errorCode;
+      let tokensSettled = options.tokensSettled ?? true;
+      if ((options.additionalDebitTokens ?? 0) > 0) {
+        const additionalDebit = await tx.user.updateMany({
+          where: {
+            id: userId,
+            availableTokens: { gte: options.additionalDebitTokens },
+          },
+          data: {
+            availableTokens: {
+              decrement: options.additionalDebitTokens,
+            },
+          },
+        });
+        if (additionalDebit.count !== 1) {
+          terminalErrorCode =
+            AnalysisJobFailureCode.PROVIDER_RECONCILIATION_REQUIRED;
+          tokensSettled = false;
+        }
+      }
+      if (tokensSettled && refundTokens > 0) {
+        await tx.user.update({
+          where: { id: userId },
+          data: { availableTokens: { increment: refundTokens } },
+        });
+      }
+      const transitionBase = {
+        jobId: jobContext.jobId,
+        fromStatus: AnalysisJobStatus.RUNNING,
+        toStatus: AnalysisJobStatus.FAILED,
+        expectedLeaseToken: jobContext.leaseToken,
+        expectedUserId: userId,
+        expectedRepositoryId: repositoryId,
+        expectedReservedTokens: jobContext.reservedTokens,
+      } as const;
+      if (tokensSettled) {
+        if (usage === null) {
+          throw new InvalidAnalysisTokenUsageError();
+        }
+        await this.analysisJobService.transition(
+          {
+            ...transitionBase,
+            data: {
+              completedAt,
+              tokensSettledAt: completedAt,
+              promptTokens: usage.promptTokens,
+              completionTokens: usage.completionTokens,
+              totalTokens: usage.totalTokens,
+              providerRequestIds,
+              errorCode: terminalErrorCode,
+              errorRetryable: false,
+            },
+          },
+          tx,
+        );
+        return;
+      }
+      await this.analysisJobService.transition(
+        {
+          ...transitionBase,
+          data: {
+            completedAt,
+            tokensSettledAt: null,
+            promptTokens: usage?.promptTokens ?? null,
+            completionTokens: usage?.completionTokens ?? null,
+            totalTokens: usage?.totalTokens ?? null,
+            providerRequestIds,
+            errorCode: AnalysisJobFailureCode.PROVIDER_RECONCILIATION_REQUIRED,
+            errorRetryable: false,
+          },
+        },
+        tx,
+      );
+    });
+  }
+
+  private terminateProviderReconciliation(
+    userId: number,
+    repositoryId: number,
+    jobContext: ResolvedAnalysisJobExecutionContext,
+    reservedTokens: number | null,
+    providerRequestId: string | null,
+    usage: AnalysisTokenUsage | null,
+  ): Promise<void> {
+    if (
+      usage !== null &&
+      reservedTokens !== null &&
+      usage.totalTokens > reservedTokens
+    ) {
+      return this.terminateWorkerJob(
+        userId,
+        repositoryId,
+        jobContext,
+        AnalysisJobFailureCode.TOKEN_BUDGET_EXCEEDED,
+        usage,
+        0,
+        providerRequestId === null ? [] : [providerRequestId],
+        {
+          tokensSettled: true,
+          additionalDebitTokens: usage.totalTokens - reservedTokens,
+        },
+      );
+    }
+    const refundTokens =
+      usage === null || reservedTokens === null
+        ? 0
+        : Math.max(0, reservedTokens - usage.totalTokens);
+    return this.terminateWorkerJob(
+      userId,
+      repositoryId,
+      jobContext,
+      AnalysisJobFailureCode.PROVIDER_RECONCILIATION_REQUIRED,
+      usage,
+      refundTokens,
+      providerRequestId === null ? [] : [providerRequestId],
+      { tokensSettled: usage !== null && reservedTokens !== null },
+    );
+  }
+
+  private async handlePostBillingPersistenceFailure(
+    userId: number,
+    repositoryId: number,
+    jobContext: ResolvedAnalysisJobExecutionContext,
+    reservedTokens: number,
+    providerRequestId: string,
+    usage: AnalysisTokenUsage,
+    originalError: unknown,
+  ): Promise<void> {
+    try {
+      await this.terminateProviderReconciliation(
+        userId,
+        repositoryId,
+        jobContext,
+        reservedTokens,
+        providerRequestId,
+        usage,
+      );
+    } catch (reconciliationError) {
+      this.logger.error({
+        event: 'analysis_provider_reconciliation_persistence_failed',
+        jobId: jobContext.jobId,
+        providerRequestId,
+        promptTokens: usage.promptTokens,
+        completionTokens: usage.completionTokens,
+        totalTokens: usage.totalTokens,
+        retryable: false,
+        originalErrorName: this.getErrorName(originalError),
+        reconciliationErrorName: this.getErrorName(reconciliationError),
+      });
+      throw new PostBillingAnalysisPersistenceError(
+        jobContext.jobId,
+        providerRequestId,
+        usage,
+      );
+    }
+  }
+
+  private async checkpointAndTerminateProviderReconciliation(
+    userId: number,
+    repositoryId: number,
+    jobContext: ResolvedAnalysisJobExecutionContext,
+    reservedTokens: number | null,
+    error: LlmProviderReconciliationError,
+  ): Promise<void> {
+    const usage = this.getValidTokenUsageOrNull(error.usage);
+    let checkpointError: unknown = null;
+
+    if (reservedTokens === null || error.providerRequestId === null) {
+      checkpointError = new InvalidAnalysisTokenUsageError();
+    } else {
+      try {
+        await this.analysisJobService.recordProviderCharge({
+          jobId: jobContext.jobId,
+          expectedLeaseToken: jobContext.leaseToken,
+          expectedUserId: userId,
+          expectedRepositoryId: repositoryId,
+          expectedReservedTokens: reservedTokens,
+          promptTokens: usage?.promptTokens ?? null,
+          completionTokens: usage?.completionTokens ?? null,
+          totalTokens: usage?.totalTokens ?? null,
+          providerRequestId: error.providerRequestId,
+        });
+      } catch (recordError) {
+        checkpointError = recordError;
+      }
+    }
+
+    try {
+      await this.terminateProviderReconciliation(
+        userId,
+        repositoryId,
+        jobContext,
+        reservedTokens,
+        error.providerRequestId,
+        usage,
+      );
+    } catch (reconciliationError) {
+      this.logger.error({
+        event: 'analysis_provider_reconciliation_persistence_failed',
+        jobId: jobContext.jobId,
+        providerRequestId: error.providerRequestId,
+        promptTokens: usage?.promptTokens ?? null,
+        completionTokens: usage?.completionTokens ?? null,
+        totalTokens: usage?.totalTokens ?? null,
+        retryable: false,
+        originalErrorName: error.name,
+        checkpointErrorName:
+          checkpointError === null ? null : this.getErrorName(checkpointError),
+        reconciliationErrorName: this.getErrorName(reconciliationError),
+      });
+      throw new PostBillingAnalysisPersistenceError(
+        jobContext.jobId,
+        error.providerRequestId,
+        usage,
+      );
+    }
+  }
+
+  private getValidTokenUsageOrNull(
+    usage: AnalysisTokenUsage | null,
+  ): AnalysisTokenUsage | null {
+    if (usage === null) {
+      return null;
+    }
+    try {
+      this.assertValidTokenUsage(usage);
+      return usage;
+    } catch {
+      return null;
+    }
+  }
+
+  private getProviderChargeCheckpoint(job: {
+    promptTokens: number | null;
+    completionTokens: number | null;
+    totalTokens: number | null;
+    providerRequestIds: string[];
+  }): {
+    providerRequestId: string | null;
+    usage: AnalysisTokenUsage | null;
+  } | null {
+    const hasCheckpoint =
+      job.providerRequestIds.length > 0 ||
+      job.promptTokens !== null ||
+      job.completionTokens !== null ||
+      job.totalTokens !== null;
+    if (!hasCheckpoint) {
+      return null;
+    }
+
+    const providerRequestId =
+      job.providerRequestIds.length === 1 ? job.providerRequestIds[0] : null;
+    if (
+      job.promptTokens === null ||
+      job.completionTokens === null ||
+      job.totalTokens === null
+    ) {
+      return { providerRequestId, usage: null };
+    }
+    const usage = {
+      promptTokens: job.promptTokens,
+      completionTokens: job.completionTokens,
+      totalTokens: job.totalTokens,
+    };
+    try {
+      this.assertValidTokenUsage(usage);
+      return { providerRequestId, usage };
+    } catch {
+      return { providerRequestId, usage: null };
+    }
+  }
+
+  private getErrorName(error: unknown): string {
+    return error instanceof Error ? error.name : 'UnknownError';
+  }
+
+  private toError(error: unknown): Error {
+    return error instanceof Error ? error : new Error('Analysis failed.');
+  }
+
+  private assertValidReservation(reservation: {
+    estimatedTokens: number;
+    reservedTokens: number;
+  }): void {
+    if (
+      !Number.isSafeInteger(reservation.estimatedTokens) ||
+      reservation.estimatedTokens < 0 ||
+      !Number.isSafeInteger(reservation.reservedTokens) ||
+      reservation.reservedTokens < reservation.estimatedTokens
+    ) {
+      throw new InvalidAnalysisTokenUsageError();
+    }
+  }
+
+  private assertValidTokenUsage(usage: {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+  }): void {
+    if (!isValidAnalysisTokenUsage(usage)) {
+      throw new InvalidAnalysisTokenUsageError();
+    }
+  }
+}
+
+@Injectable()
+export class AnalysisService {
+  constructor(
+    private prisma: PrismaService,
+    private refiner: RefinerService,
+    private preprocessor: PreprocessorService,
+    private llmProvider: LlmProviderService,
+    private analysisJobRunner: AnalysisJobRunnerService,
+  ) {}
+
+  runAnalysis(userId: number, repositoryId: number, data: CollectedDataDto) {
+    return this.analysisJobRunner.runAnalysis(userId, repositoryId, data);
+  }
+
   /**
    * Pre-calculate the exact tokens required for the data analysis.
    */
-  async estimateTokens(
-    data: CollectedDataDto,
-  ): Promise<{ prCount: number; estimatedTokens: number }> {
+  estimateTokens(data: CollectedDataDto): Promise<{
+    prCount: number;
+    estimatedTokens: number;
+  }> {
     const refinedData = this.refiner.refine(data);
     const prCount = refinedData.pullRequests.length;
     if (prCount === 0) {
-      return { prCount: 0, estimatedTokens: 0 };
+      return Promise.resolve({ prCount: 0, estimatedTokens: 0 });
     }
     const preprocessedData = this.preprocessor.preprocess(refinedData);
     const estimatedTokens =
       this.llmProvider.estimateTokensForData(preprocessedData);
-    return { prCount, estimatedTokens };
+    return Promise.resolve({ prCount, estimatedTokens });
   }
 
   /**
    * Get aggregate stats for a user
    */
-  async getUserStats(userId: number) {
-    return (this.prisma as any).userStat.findUnique({
+  getUserStats(userId: number) {
+    return this.prisma.userStat.findUnique({
       where: { userId },
     });
   }
@@ -132,13 +878,13 @@ export class AnalysisService {
   /**
    * Get all reports for a user, optionally filtered by shared status
    */
-  async getReports(userId: number, isShared?: boolean) {
-    const whereClause: any = { userId };
+  getReports(userId: number, isShared?: boolean) {
+    const whereClause: Prisma.AnalysisReportWhereInput = { userId };
     if (isShared !== undefined) {
       whereClause.isShared = isShared;
     }
 
-    return (this.prisma as any).analysisReport.findMany({
+    return this.prisma.analysisReport.findMany({
       where: whereClause,
       include: { repository: true },
       orderBy: { syncTime: 'desc' },
@@ -148,8 +894,8 @@ export class AnalysisService {
   /**
    * Get all reports for a specific repository
    */
-  async getReportsByRepository(userId: number, repositoryId: number) {
-    return await (this.prisma as any).analysisReport.findMany({
+  getReportsByRepository(userId: number, repositoryId: number) {
+    return this.prisma.analysisReport.findMany({
       where: { userId, repositoryId },
       include: { repository: true },
       orderBy: { syncTime: 'desc' },
@@ -159,8 +905,8 @@ export class AnalysisService {
   /**
    * Get a specific report by ID, verifying ownership
    */
-  async getReportById(id: number, userId: number) {
-    return await (this.prisma as any).analysisReport.findFirst({
+  getReportById(id: number, userId: number) {
+    return this.prisma.analysisReport.findFirst({
       where: { id, userId },
       include: { repository: true },
     });
@@ -181,9 +927,9 @@ export class AnalysisService {
 
     // 2. For each repository, get the latest report
     const summaries = await Promise.all(
-      reports.map(async (r: any) => {
+      reports.map(async (report) => {
         const latestReport = await this.prisma.analysisReport.findFirst({
-          where: { userId, repositoryId: r.repositoryId },
+          where: { userId, repositoryId: report.repositoryId },
           include: { repository: true },
           orderBy: { syncTime: 'desc' },
         });
@@ -261,8 +1007,8 @@ export class AnalysisService {
   /**
    * Get all shared representative reports across the platform
    */
-  async getAllPublicReports() {
-    return await this.prisma.user.findMany({
+  getAllPublicReports() {
+    return this.prisma.user.findMany({
       where: {
         representativeReport: {
           isShared: true,
