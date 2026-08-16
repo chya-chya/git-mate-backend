@@ -1,0 +1,273 @@
+import {
+  ConflictException,
+  HttpException,
+  NotFoundException,
+} from '@nestjs/common';
+import { AnalysisJobStage, AnalysisJobStatus } from '@prisma/client';
+import { AnalysisJobApiRepository } from '../analysis-job-api.repository';
+import { AnalysisJobApiService } from '../analysis-job-api.service';
+import { AnalysisJobApiRecord } from '../analysis-job-api.types';
+import { AnalysisJobResponseMapper } from '../analysis-job-response.mapper';
+
+const FIRST_JOB_ID = '11111111-1111-4111-8111-111111111111';
+const RETRY_JOB_ID = '22222222-2222-4222-8222-222222222222';
+
+async function expectApiError(
+  operation: Promise<unknown>,
+  expectedCode: string,
+): Promise<void> {
+  try {
+    await operation;
+    throw new Error(`Expected API error ${expectedCode}`);
+  } catch (error) {
+    if (!(error instanceof HttpException)) {
+      throw error;
+    }
+    const response = error.getResponse();
+    if (typeof response !== 'object' || response === null) {
+      throw new Error('Expected a structured API error');
+    }
+    expect((response as Record<string, unknown>).code).toBe(expectedCode);
+  }
+}
+
+function createJob(
+  overrides: Partial<AnalysisJobApiRecord> = {},
+): AnalysisJobApiRecord {
+  return {
+    id: FIRST_JOB_ID,
+    status: AnalysisJobStatus.QUEUED,
+    stage: AnalysisJobStage.WAITING,
+    progress: 0,
+    userId: 7,
+    repositoryId: 17,
+    idempotencyKey: 'request-1',
+    requestHash: 'a'.repeat(64),
+    sourceCursor: null,
+    modelVersion: 'gpt-5-mini',
+    promptVersion: 'analysis-v1',
+    estimatedTokens: null,
+    reservedTokens: null,
+    promptTokens: null,
+    completionTokens: null,
+    totalTokens: null,
+    tokensSettledAt: null,
+    providerRequestIds: [],
+    publishAttempts: 0,
+    messagePublishedAt: null,
+    nextPublishAt: null,
+    attemptCount: 0,
+    maxAttempts: 5,
+    leaseToken: null,
+    leaseExpiresAt: null,
+    heartbeatAt: null,
+    lastErrorCode: null,
+    lastErrorMessage: null,
+    errorRetryable: null,
+    startedAt: null,
+    completedAt: null,
+    createdAt: new Date('2026-08-16T00:00:00.000Z'),
+    updatedAt: new Date('2026-08-16T00:00:00.000Z'),
+    repository: {
+      id: 17,
+      githubRepoId: '123456789',
+      fullName: 'octocat/example',
+    },
+    report: null,
+    ...overrides,
+  };
+}
+
+describe('AnalysisJobApiService', () => {
+  const database = {};
+  let storedJob: AnalysisJobApiRecord | null;
+  const repository = {
+    transaction: jest.fn(
+      (operation: (transaction: object) => Promise<AnalysisJobApiRecord>) =>
+        operation(database),
+    ),
+    acquireTransactionLock: jest.fn().mockResolvedValue(undefined),
+    findByIdempotencyKey: jest.fn(() => Promise.resolve(storedJob)),
+    findOwnedRepositoryByGithubId: jest.fn(
+      (_userId: number, githubRepoId: string) =>
+        Promise.resolve({
+          id: githubRepoId === '987654321' ? 18 : 17,
+          githubRepoId,
+          fullName: `octocat/${githubRepoId}`,
+          lastSyncTime: null,
+          owner: { availableTokens: 1000 },
+        }),
+    ),
+    findActiveByRepositoryId: jest.fn().mockResolvedValue(null),
+    create: jest.fn(
+      (input: {
+        userId: number;
+        repositoryId: number;
+        idempotencyKey: string;
+        requestHash: string;
+      }) => {
+        storedJob = createJob({
+          userId: input.userId,
+          repositoryId: input.repositoryId,
+          idempotencyKey: input.idempotencyKey,
+          requestHash: input.requestHash,
+          repository: {
+            id: input.repositoryId,
+            githubRepoId: input.repositoryId === 18 ? '987654321' : '123456789',
+            fullName: 'octocat/example',
+          },
+        });
+        return Promise.resolve(storedJob);
+      },
+    ),
+    findOwnedById: jest.fn(),
+    listOwned: jest.fn(),
+  };
+  const service = new AnalysisJobApiService(
+    repository as unknown as AnalysisJobApiRepository,
+    new AnalysisJobResponseMapper(),
+  );
+
+  beforeEach(() => {
+    storedJob = null;
+    jest.clearAllMocks();
+    repository.acquireTransactionLock.mockResolvedValue(undefined);
+    repository.findByIdempotencyKey.mockImplementation(() =>
+      Promise.resolve(storedJob),
+    );
+    repository.findActiveByRepositoryId.mockResolvedValue(null);
+  });
+
+  it('returns the same Job for the same user, key, and request', async () => {
+    const first = await service.create(7, '123456789', 'request-1');
+    const repeated = await service.create(7, '123456789', 'request-1');
+
+    expect(repeated.jobId).toBe(first.jobId);
+    expect(repository.create).toHaveBeenCalledTimes(1);
+    expect(repository.acquireTransactionLock).toHaveBeenNthCalledWith(
+      1,
+      'analysis-job-idempotency:7:request-1',
+      database,
+    );
+  });
+
+  it('rejects reuse of the same key for a different repository', async () => {
+    await service.create(7, '123456789', 'request-1');
+
+    await expectApiError(
+      service.create(7, '987654321', 'request-1'),
+      'IDEMPOTENCY_KEY_REUSED',
+    );
+    expect(repository.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('checks an identical request before the active Job limit', async () => {
+    const first = await service.create(7, '123456789', 'request-1');
+    repository.findActiveByRepositoryId.mockResolvedValue({ id: first.jobId });
+
+    await expect(
+      service.create(7, '123456789', 'request-1'),
+    ).resolves.toMatchObject({ jobId: first.jobId });
+  });
+
+  it('blocks a new key when the repository already has an active Job', async () => {
+    repository.findActiveByRepositoryId.mockResolvedValue({ id: FIRST_JOB_ID });
+
+    await expectApiError(
+      service.create(7, '123456789', 'request-2'),
+      'ACTIVE_JOB_EXISTS',
+    );
+    expect(repository.create).not.toHaveBeenCalled();
+  });
+
+  it('re-reads an idempotent winner after a unique conflict', async () => {
+    const first = await service.create(7, '123456789', 'request-1');
+    repository.transaction.mockRejectedValueOnce({ code: 'P2002' });
+
+    await expect(
+      service.create(7, '123456789', 'request-1'),
+    ).resolves.toMatchObject({ jobId: first.jobId });
+  });
+
+  it('creates a retry as a new Job without mutating the source', async () => {
+    const source = createJob({
+      id: FIRST_JOB_ID,
+      status: AnalysisJobStatus.FAILED,
+      stage: null,
+      errorRetryable: true,
+      lastErrorCode: 'ANALYSIS_FAILED',
+      completedAt: new Date('2026-08-16T00:01:00.000Z'),
+    });
+    repository.findOwnedById.mockResolvedValue(source);
+    repository.create.mockImplementationOnce(
+      (input: { idempotencyKey: string; requestHash: string }) => {
+        storedJob = createJob({
+          id: RETRY_JOB_ID,
+          idempotencyKey: input.idempotencyKey,
+          requestHash: input.requestHash,
+        });
+        return Promise.resolve(storedJob);
+      },
+    );
+
+    const retried = await service.retry(7, FIRST_JOB_ID, 'retry-1');
+
+    expect(retried.jobId).toBe(RETRY_JOB_ID);
+    expect(source.status).toBe(AnalysisJobStatus.FAILED);
+    expect(repository.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: 7,
+        repositoryId: 17,
+        idempotencyKey: 'retry-1',
+      }),
+      database,
+    );
+  });
+
+  it('hides another user or missing source Job as JOB_NOT_FOUND', async () => {
+    repository.findOwnedById.mockResolvedValue(null);
+
+    await expect(
+      service.retry(8, FIRST_JOB_ID, 'retry-1'),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(repository.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects a non-retryable failed Job', async () => {
+    repository.findOwnedById.mockResolvedValue(
+      createJob({ status: AnalysisJobStatus.FAILED, errorRetryable: false }),
+    );
+
+    await expect(
+      service.retry(7, FIRST_JOB_ID, 'retry-1'),
+    ).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('lists only through a user-scoped repository query', async () => {
+    repository.listOwned.mockResolvedValue([createJob()]);
+
+    const result = await service.list(7, {
+      repositoryId: 17,
+      status: AnalysisJobStatus.QUEUED,
+      limit: 20,
+    });
+
+    expect(result.items).toHaveLength(1);
+    expect(repository.listOwned).toHaveBeenCalledWith({
+      userId: 7,
+      repositoryId: 17,
+      status: AnalysisJobStatus.QUEUED,
+      limit: 20,
+      cursor: undefined,
+    });
+  });
+
+  it('rejects a malformed cursor without querying storage', async () => {
+    await expect(
+      service.list(7, { limit: 20, cursor: 'bm90LWpzb24' }),
+    ).rejects.toMatchObject({
+      response: { code: 'INVALID_REQUEST', message: 'Cursor is invalid.' },
+    });
+    expect(repository.listOwned).not.toHaveBeenCalled();
+  });
+});

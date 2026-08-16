@@ -3,7 +3,12 @@ import { resolve } from 'node:path';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { AnalysisJobStatus, PrismaClient } from '@prisma/client';
 import { Pool } from 'pg';
+import { HttpException } from '@nestjs/common';
 import { StatService } from '../../analysis/stat.service';
+import { PrismaService } from '../../prisma/prisma.service';
+import { AnalysisJobApiRepository } from '../analysis-job-api.repository';
+import { AnalysisJobApiService } from '../analysis-job-api.service';
+import { AnalysisJobResponseMapper } from '../analysis-job-response.mapper';
 import { AnalysisJobRepository } from '../analysis-job.repository';
 import {
   AnalysisJobFailureCode,
@@ -20,6 +25,7 @@ describeDatabase('AnalysisJob PostgreSQL invariants', () => {
   let prismaPool: Pool;
   let prisma: PrismaClient;
   let analysisJobService: AnalysisJobService;
+  let analysisJobApiService: AnalysisJobApiService;
   let userId: number;
   let repositoryId: number;
 
@@ -95,6 +101,10 @@ describeDatabase('AnalysisJob PostgreSQL invariants', () => {
     await prisma.$connect();
     analysisJobService = new AnalysisJobService(
       new AnalysisJobRepository(prisma),
+    );
+    analysisJobApiService = new AnalysisJobApiService(
+      new AnalysisJobApiRepository(prisma as unknown as PrismaService),
+      new AnalysisJobResponseMapper(),
     );
   });
 
@@ -277,6 +287,91 @@ describeDatabase('AnalysisJob PostgreSQL invariants', () => {
       Math.abs(stat.mutualRespectScore - 3.4),
     );
     expect(distanceFromValidResult).toBeLessThan(Number.EPSILON * 4);
+  });
+
+  it('creates one Job for concurrent requests with the same idempotency key', async () => {
+    const repository = await prisma.repository.create({
+      data: {
+        githubRepoId: 'integration-api-idempotency',
+        fullName: 'owner/api-idempotency',
+        ownerId: userId,
+      },
+    });
+
+    const [first, second] = await Promise.all([
+      analysisJobApiService.create(
+        userId,
+        repository.githubRepoId,
+        'integration-api-same-key',
+      ),
+      analysisJobApiService.create(
+        userId,
+        repository.githubRepoId,
+        'integration-api-same-key',
+      ),
+    ]);
+
+    expect(second.jobId).toBe(first.jobId);
+    await expect(
+      prisma.analysisJob.count({
+        where: {
+          userId,
+          idempotencyKey: 'integration-api-same-key',
+        },
+      }),
+    ).resolves.toBe(1);
+  });
+
+  it('allows only one active Job for concurrent repository requests with different keys', async () => {
+    const repository = await prisma.repository.create({
+      data: {
+        githubRepoId: 'integration-api-active-job',
+        fullName: 'owner/api-active-job',
+        ownerId: userId,
+      },
+    });
+
+    const results = await Promise.allSettled([
+      analysisJobApiService.create(
+        userId,
+        repository.githubRepoId,
+        'integration-api-active-key-1',
+      ),
+      analysisJobApiService.create(
+        userId,
+        repository.githubRepoId,
+        'integration-api-active-key-2',
+      ),
+    ]);
+
+    expect(
+      results.filter((result) => result.status === 'fulfilled'),
+    ).toHaveLength(1);
+    const rejected = results.find(
+      (result): result is PromiseRejectedResult => result.status === 'rejected',
+    );
+    const rejectionReason: unknown = rejected?.reason;
+    expect(rejectionReason).toBeInstanceOf(HttpException);
+    if (!(rejectionReason instanceof HttpException)) {
+      throw new Error('Expected an HTTP conflict');
+    }
+    const rejectionResponse = rejectionReason.getResponse();
+    if (typeof rejectionResponse !== 'object' || rejectionResponse === null) {
+      throw new Error('Expected a structured API conflict');
+    }
+    expect((rejectionResponse as Record<string, unknown>).code).toBe(
+      'ACTIVE_JOB_EXISTS',
+    );
+    await expect(
+      prisma.analysisJob.count({
+        where: {
+          repositoryId: repository.id,
+          status: {
+            in: [AnalysisJobStatus.QUEUED, AnalysisJobStatus.RUNNING],
+          },
+        },
+      }),
+    ).resolves.toBe(1);
   });
 
   async function createRunningJob(idempotencyKey: string) {
