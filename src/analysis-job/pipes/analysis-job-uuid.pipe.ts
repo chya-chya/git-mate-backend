@@ -12,6 +12,6 @@ export class AnalysisJobUuidPipe implements PipeTransform<unknown, string> {
         400,
       );
     }
-    return value;
+    return value.toLowerCase();
   }
 }

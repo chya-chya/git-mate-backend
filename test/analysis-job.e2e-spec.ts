@@ -10,10 +10,10 @@ import {
 import { Test } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
-import { ThrottlerStorage } from '@nestjs/throttler';
 import { AnalysisJobStage, AnalysisJobStatus } from '@prisma/client';
 import request from 'supertest';
 import { App } from 'supertest/types';
+import { AnalysisJobApiRepository } from '../src/analysis-job/analysis-job-api.repository';
 import { AnalysisJobApiService } from '../src/analysis-job/analysis-job-api.service';
 import { AnalysisJobController } from '../src/analysis-job/analysis-job.controller';
 import { AnalysisJobValidationExceptionFilter } from '../src/analysis-job/filters/analysis-job-validation-exception.filter';
@@ -93,8 +93,8 @@ describe('Analysis Job API (e2e)', () => {
         AnalysisJobRateLimitGuard,
         { provide: ConfigService, useValue: { get: jest.fn() } },
         {
-          provide: ThrottlerStorage,
-          useValue: { increment: jest.fn() },
+          provide: AnalysisJobApiRepository,
+          useValue: { getCreationRateLimitStatus: jest.fn() },
         },
       ],
     })
@@ -218,12 +218,31 @@ describe('Analysis Job API (e2e)', () => {
     expect(service.list).not.toHaveBeenCalled();
   });
 
+  it('rejects repository IDs above the PostgreSQL integer range', async () => {
+    await request(app.getHttpServer())
+      .get('/analysis/jobs?repositoryId=2147483648')
+      .expect(400)
+      .expect((response) => expectResponseCode(response, 'INVALID_REQUEST'));
+    expect(service.list).not.toHaveBeenCalled();
+  });
+
   it('rejects malformed UUID parameters', async () => {
     await request(app.getHttpServer())
       .get('/analysis/jobs/not-a-uuid')
       .expect(400)
       .expect((response) => expectResponseCode(response, 'INVALID_REQUEST'));
     expect(service.findOne).not.toHaveBeenCalled();
+  });
+
+  it('normalizes uppercase UUID parameters before querying a Job', async () => {
+    await request(app.getHttpServer())
+      .get('/analysis/jobs/ABCDEFAB-CDEF-4ABC-8DEF-ABCDEFABCDEF')
+      .expect(200);
+
+    expect(service.findOne).toHaveBeenCalledWith(
+      7,
+      'abcdefab-cdef-4abc-8def-abcdefabcdef',
+    );
   });
 
   it('returns 404 for a Job that is absent or belongs to another user', async () => {
@@ -272,6 +291,14 @@ describe('Analysis Job API (e2e)', () => {
     for (const status of ['202', '400', '401', '404', '409', '429', '503']) {
       expect(responses).toHaveProperty(status);
     }
+    const repositoryIdParameter = document.paths[
+      '/analysis/jobs'
+    ]?.get?.parameters?.find(
+      (parameter) => 'name' in parameter && parameter.name === 'repositoryId',
+    );
+    expect(repositoryIdParameter).toMatchObject({
+      schema: { maximum: 2147483647 },
+    });
     const schemas = document.components?.schemas;
     expect(schemas).toHaveProperty('AnalysisJobResponseDto');
     expect(schemas).toHaveProperty('AnalysisJobListResponseDto');

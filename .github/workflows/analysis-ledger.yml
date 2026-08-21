@@ -8,6 +8,7 @@ on:
       - 'src/analysis/**'
       - 'src/analysis-job/**'
       - 'src/prisma/**'
+      - 'test/**'
       - 'package.json'
       - 'package-lock.json'
 
@@ -44,6 +45,17 @@ jobs:
       - run: npx prisma generate
       - run: npm run build
       - run: npm test -- --runInBand
+      - run: npm run test:e2e -- --runInBand
+        env:
+          JWT_SECRET: ci-e2e-only-secret
+          ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          GITHUB_CLIENT_ID: ci-e2e-client-id
+          GITHUB_CLIENT_SECRET: ci-e2e-client-secret
+          GITHUB_CALLBACK_URL: http://127.0.0.1/auth/github/callback
+          GITHUB_APP_ID: '1'
+          GITHUB_APP_INSTALL_URL: https://github.com/apps/ci-e2e-test/installations/new
+          GITHUB_APP_WEBHOOK_SECRET: ci-e2e-webhook-secret
+          GITHUB_APP_PRIVATE_KEY: ci-e2e-private-key
       - run: npm test -- --runInBand src/analysis-job/test/analysis-job.postgres.integration.spec.ts
         env:
           RUN_DATABASE_INTEGRATION_TESTS: 'true'

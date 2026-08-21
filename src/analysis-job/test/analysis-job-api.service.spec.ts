@@ -8,6 +8,10 @@ import { AnalysisJobApiRepository } from '../analysis-job-api.repository';
 import { AnalysisJobApiService } from '../analysis-job-api.service';
 import { AnalysisJobApiRecord } from '../analysis-job-api.types';
 import { AnalysisJobResponseMapper } from '../analysis-job-response.mapper';
+import {
+  ActiveAnalysisJobExistsError,
+  AnalysisJobRepository,
+} from '../analysis-job.repository';
 
 const FIRST_JOB_ID = '11111111-1111-4111-8111-111111111111';
 const RETRY_JOB_ID = '22222222-2222-4222-8222-222222222222';
@@ -87,6 +91,12 @@ describe('AnalysisJobApiService', () => {
         operation(database),
     ),
     acquireTransactionLock: jest.fn().mockResolvedValue(undefined),
+    getCreationRateLimitStatus: jest.fn().mockResolvedValue({
+      totalHits: 0,
+      remaining: 5,
+      retryAfterSeconds: 60,
+      isBlocked: false,
+    }),
     findByIdempotencyKey: jest.fn(() => Promise.resolve(storedJob)),
     findOwnedRepositoryByGithubId: jest.fn(
       (_userId: number, githubRepoId: string) =>
@@ -98,7 +108,6 @@ describe('AnalysisJobApiService', () => {
           owner: { availableTokens: 1000 },
         }),
     ),
-    findActiveByRepositoryId: jest.fn().mockResolvedValue(null),
     create: jest.fn(
       (input: {
         userId: number;
@@ -123,19 +132,39 @@ describe('AnalysisJobApiService', () => {
     findOwnedById: jest.fn(),
     listOwned: jest.fn(),
   };
+  const creationRepository = {
+    createExclusive: jest.fn(
+      (
+        _repositoryId: number,
+        operation: (transaction: object) => Promise<AnalysisJobApiRecord>,
+      ) => operation(database),
+    ),
+  };
   const service = new AnalysisJobApiService(
     repository as unknown as AnalysisJobApiRepository,
     new AnalysisJobResponseMapper(),
+    creationRepository as unknown as AnalysisJobRepository,
   );
 
   beforeEach(() => {
     storedJob = null;
     jest.clearAllMocks();
     repository.acquireTransactionLock.mockResolvedValue(undefined);
+    repository.getCreationRateLimitStatus.mockResolvedValue({
+      totalHits: 0,
+      remaining: 5,
+      retryAfterSeconds: 60,
+      isBlocked: false,
+    });
     repository.findByIdempotencyKey.mockImplementation(() =>
       Promise.resolve(storedJob),
     );
-    repository.findActiveByRepositoryId.mockResolvedValue(null);
+    creationRepository.createExclusive.mockImplementation(
+      (
+        _repositoryId: number,
+        operation: (transaction: object) => Promise<AnalysisJobApiRecord>,
+      ) => operation(database),
+    );
   });
 
   it('returns the same Job for the same user, key, and request', async () => {
@@ -147,6 +176,11 @@ describe('AnalysisJobApiService', () => {
     expect(repository.acquireTransactionLock).toHaveBeenNthCalledWith(
       1,
       'analysis-job-idempotency:7:request-1',
+      database,
+    );
+    expect(repository.acquireTransactionLock).toHaveBeenNthCalledWith(
+      2,
+      'analysis-job-rate-limit:7',
       database,
     );
   });
@@ -163,20 +197,38 @@ describe('AnalysisJobApiService', () => {
 
   it('checks an identical request before the active Job limit', async () => {
     const first = await service.create(7, '123456789', 'request-1');
-    repository.findActiveByRepositoryId.mockResolvedValue({ id: first.jobId });
 
     await expect(
       service.create(7, '123456789', 'request-1'),
     ).resolves.toMatchObject({ jobId: first.jobId });
+    expect(creationRepository.createExclusive).toHaveBeenCalledTimes(1);
   });
 
   it('blocks a new key when the repository already has an active Job', async () => {
-    repository.findActiveByRepositoryId.mockResolvedValue({ id: FIRST_JOB_ID });
+    creationRepository.createExclusive.mockRejectedValueOnce(
+      new ActiveAnalysisJobExistsError(17),
+    );
 
     await expectApiError(
       service.create(7, '123456789', 'request-2'),
       'ACTIVE_JOB_EXISTS',
     );
+    expect(repository.create).not.toHaveBeenCalled();
+  });
+
+  it('blocks a sixth Job under the transaction-scoped user limit', async () => {
+    repository.getCreationRateLimitStatus.mockResolvedValueOnce({
+      totalHits: 5,
+      remaining: 0,
+      retryAfterSeconds: 18,
+      isBlocked: true,
+    });
+
+    await expectApiError(
+      service.create(7, '123456789', 'request-6'),
+      'RATE_LIMITED',
+    );
+    expect(repository.findOwnedRepositoryByGithubId).not.toHaveBeenCalled();
     expect(repository.create).not.toHaveBeenCalled();
   });
 

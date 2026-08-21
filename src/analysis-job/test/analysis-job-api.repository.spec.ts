@@ -4,6 +4,7 @@ import { AnalysisJobApiRepository } from '../analysis-job-api.repository';
 
 describe('AnalysisJobApiRepository ownership queries', () => {
   const prisma = {
+    $queryRaw: jest.fn(),
     repository: { findFirst: jest.fn() },
     analysisJob: { findFirst: jest.fn(), findMany: jest.fn() },
   };
@@ -12,6 +13,22 @@ describe('AnalysisJobApiRepository ownership queries', () => {
   );
 
   beforeEach(() => jest.clearAllMocks());
+
+  it('derives a shared rolling-window creation limit from API Job rows', async () => {
+    prisma.$queryRaw.mockResolvedValue([
+      { totalHits: 5, retryAfterSeconds: 15 },
+    ]);
+
+    await expect(
+      repository.getCreationRateLimitStatus(7, prisma as never),
+    ).resolves.toEqual({
+      totalHits: 5,
+      remaining: 0,
+      retryAfterSeconds: 15,
+      isBlocked: true,
+    });
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+  });
 
   it('includes ownerId in repository lookup', async () => {
     prisma.repository.findFirst.mockResolvedValue(null);

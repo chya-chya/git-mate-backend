@@ -1,4 +1,5 @@
 import {
+  ConflictException,
   Injectable,
   NotFoundException,
   ForbiddenException,
@@ -15,6 +16,7 @@ import { AnalysisService } from '../analysis/analysis.service';
 import { GithubAppService } from '../github-app/github-app.service';
 import { GithubInstallationTokenService } from '../github-app/github-installation-token.service';
 import { Repository } from '@prisma/client';
+import { ActiveAnalysisJobExistsError } from '../analysis-job/analysis-job.repository';
 
 @Injectable()
 export class CollectionService implements ICollectionService {
@@ -47,6 +49,7 @@ export class CollectionService implements ICollectionService {
       );
     }
 
+    const syncStartedAt = new Date();
     const [owner, repoName] = repository.fullName.split('/');
 
     const githubData =
@@ -88,19 +91,31 @@ export class CollectionService implements ICollectionService {
       })),
     };
 
-    // Update last sync time
-    await this.prisma.repository.update({
-      where: { githubRepoId },
-      data: { lastSyncTime: new Date() },
-    });
-
     // 🚀 Trigger Analysis (Await so Lambda doesn't exit early)
     // AWS Lambda will freeze execution if we return before this completes.
-    await this.analysisService.runAnalysis(
-      userId,
-      repository.id,
-      collectedData,
-    );
+    try {
+      await this.analysisService.runAnalysis(
+        userId,
+        repository.id,
+        collectedData,
+      );
+    } catch (error) {
+      if (error instanceof ActiveAnalysisJobExistsError) {
+        throw new ConflictException({
+          code: 'ACTIVE_JOB_EXISTS',
+          message: 'An active analysis job already exists for this repository.',
+        });
+      }
+      throw error;
+    }
+
+    await this.prisma.repository.updateMany({
+      where: {
+        githubRepoId,
+        OR: [{ lastSyncTime: null }, { lastSyncTime: { lt: syncStartedAt } }],
+      },
+      data: { lastSyncTime: syncStartedAt },
+    });
 
     return collectedData;
   }

@@ -31,11 +31,13 @@ export class ListAnalysisJobsQueryDto {
     description: '내부 저장소 ID',
     example: 17,
     minimum: 1,
+    maximum: 2147483647,
   })
   @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)
+  @Max(2147483647)
   repositoryId?: number;
 
   @ApiPropertyOptional({ enum: AnalysisJobStatus })

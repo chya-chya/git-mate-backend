@@ -2,55 +2,62 @@ import {
   CanActivate,
   ExecutionContext,
   HttpException,
-  Inject,
   Injectable,
+  ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
-import { ThrottlerStorage } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
+import {
+  ANALYSIS_JOB_CREATION_RATE_LIMIT,
+  AnalysisJobApiRepository,
+  AnalysisJobCreationRateLimitStatus,
+} from '../analysis-job-api.repository';
 
 interface AuthenticatedRequest extends Request {
   user?: { id?: number };
 }
 
-const RATE_LIMIT = 5;
-const RATE_LIMIT_TTL_MS = 60_000;
-const THROTTLER_NAME = 'analysis-job-create';
-
 @Injectable()
 export class AnalysisJobRateLimitGuard implements CanActivate {
-  constructor(
-    @Inject(ThrottlerStorage)
-    private readonly storage: ThrottlerStorage,
-  ) {}
+  constructor(private readonly repository: AnalysisJobApiRepository) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<AuthenticatedRequest>();
     const response = context.switchToHttp().getResponse<Response>();
     const userId = request.user?.id;
-    if (!Number.isInteger(userId) || (userId ?? 0) <= 0) {
+    if (
+      typeof userId !== 'number' ||
+      !Number.isInteger(userId) ||
+      userId <= 0
+    ) {
       throw new UnauthorizedException({
         code: 'UNAUTHORIZED',
         message: 'Authentication is required.',
       });
     }
 
-    const record = await this.storage.increment(
-      `${THROTTLER_NAME}:user:${userId}`,
-      RATE_LIMIT_TTL_MS,
-      RATE_LIMIT,
-      RATE_LIMIT_TTL_MS,
-      THROTTLER_NAME,
-    );
-    response.setHeader('X-RateLimit-Limit-Analysis-Job', RATE_LIMIT);
+    let record: AnalysisJobCreationRateLimitStatus;
+    try {
+      record = await this.repository.getCreationRateLimitStatus(userId);
+    } catch {
+      throw new ServiceUnavailableException({
+        code: 'JOB_ACCEPTANCE_UNAVAILABLE',
+        message: 'Analysis job acceptance is temporarily unavailable.',
+      });
+    }
+
     response.setHeader(
-      'X-RateLimit-Remaining-Analysis-Job',
-      Math.max(0, RATE_LIMIT - record.totalHits),
+      'X-RateLimit-Limit-Analysis-Job',
+      ANALYSIS_JOB_CREATION_RATE_LIMIT,
     );
-    response.setHeader('X-RateLimit-Reset-Analysis-Job', record.timeToExpire);
+    response.setHeader('X-RateLimit-Remaining-Analysis-Job', record.remaining);
+    response.setHeader(
+      'X-RateLimit-Reset-Analysis-Job',
+      record.retryAfterSeconds,
+    );
 
     if (record.isBlocked) {
-      response.setHeader('Retry-After', record.timeToBlockExpire);
+      response.setHeader('Retry-After', record.retryAfterSeconds);
       throw new HttpException(
         {
           code: 'RATE_LIMITED',

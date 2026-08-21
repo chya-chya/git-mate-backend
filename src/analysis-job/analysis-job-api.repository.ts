@@ -28,6 +28,16 @@ export interface ListOwnedAnalysisJobsInput {
   cursor?: AnalysisJobCursor;
 }
 
+export interface AnalysisJobCreationRateLimitStatus {
+  totalHits: number;
+  remaining: number;
+  retryAfterSeconds: number;
+  isBlocked: boolean;
+}
+
+export const ANALYSIS_JOB_CREATION_RATE_LIMIT = 5;
+export const ANALYSIS_JOB_CREATION_RATE_LIMIT_WINDOW_MS = 60_000;
+
 @Injectable()
 export class AnalysisJobApiRepository {
   constructor(private readonly prisma: PrismaService) {}
@@ -48,6 +58,50 @@ export class AnalysisJobApiRepository {
   ): Promise<void> {
     const lockId = createHash('sha256').update(scope).digest().readBigInt64BE();
     await database.$executeRaw`SELECT pg_advisory_xact_lock(${lockId})`;
+  }
+
+  async getCreationRateLimitStatus(
+    userId: number,
+    database: AnalysisJobApiTransaction | PrismaService = this.prisma,
+  ): Promise<AnalysisJobCreationRateLimitStatus> {
+    const [record] = await database.$queryRaw<
+      Array<{ totalHits: number; retryAfterSeconds: number }>
+    >`
+      WITH recent_jobs AS (
+        SELECT "createdAt"
+        FROM "analysis_jobs"
+        WHERE "userId" = ${userId}
+          AND "createdAt" > CURRENT_TIMESTAMP
+            - ${ANALYSIS_JOB_CREATION_RATE_LIMIT_WINDOW_MS} * INTERVAL '1 millisecond'
+          AND "idempotencyKey" NOT LIKE 'legacy-report:%'
+          AND "idempotencyKey" NOT LIKE 'sync:%'
+        ORDER BY "createdAt" ASC
+        LIMIT ${ANALYSIS_JOB_CREATION_RATE_LIMIT}
+      )
+      SELECT
+        COUNT(*)::integer AS "totalHits",
+        COALESCE(
+          GREATEST(
+            1,
+            CEIL(EXTRACT(EPOCH FROM (
+              MIN("createdAt")
+              + ${ANALYSIS_JOB_CREATION_RATE_LIMIT_WINDOW_MS} * INTERVAL '1 millisecond'
+              - CURRENT_TIMESTAMP
+            )))::integer
+          ),
+          ${Math.ceil(ANALYSIS_JOB_CREATION_RATE_LIMIT_WINDOW_MS / 1000)}
+        ) AS "retryAfterSeconds"
+      FROM recent_jobs
+    `;
+    const totalHits = record?.totalHits ?? 0;
+    const retryAfterSeconds = record?.retryAfterSeconds ?? 60;
+
+    return {
+      totalHits,
+      remaining: Math.max(0, ANALYSIS_JOB_CREATION_RATE_LIMIT - totalHits),
+      retryAfterSeconds,
+      isBlocked: totalHits >= ANALYSIS_JOB_CREATION_RATE_LIMIT,
+    };
   }
 
   findByIdempotencyKey(
@@ -77,21 +131,6 @@ export class AnalysisJobApiRepository {
         lastSyncTime: true,
         owner: { select: { availableTokens: true } },
       },
-    });
-  }
-
-  findActiveByRepositoryId(
-    repositoryId: number,
-    database: AnalysisJobApiTransaction,
-  ): Promise<{ id: string } | null> {
-    return database.analysisJob.findFirst({
-      where: {
-        repositoryId,
-        status: {
-          in: [AnalysisJobStatus.QUEUED, AnalysisJobStatus.RUNNING],
-        },
-      },
-      select: { id: true },
     });
   }
 

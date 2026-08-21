@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import {
   AnalysisJob,
@@ -40,6 +41,15 @@ export interface AnalysisJobTransitionData {
 }
 
 export type AnalysisJobDatabase = Pick<Prisma.TransactionClient, 'analysisJob'>;
+
+export type AnalysisJobCreationDatabase = Prisma.TransactionClient;
+
+export class ActiveAnalysisJobExistsError extends Error {
+  constructor(repositoryId: number) {
+    super(`Repository ${repositoryId} already has an active analysis job`);
+    this.name = ActiveAnalysisJobExistsError.name;
+  }
+}
 
 export type RunningAnalysisJobContext = Pick<
   AnalysisJob,
@@ -129,6 +139,30 @@ export type TransitionAnalysisJobRecordInput =
 @Injectable()
 export class AnalysisJobRepository {
   constructor(private readonly prisma: PrismaService) {}
+
+  createExclusive<T>(
+    repositoryId: number,
+    operation: (database: AnalysisJobCreationDatabase) => Promise<T>,
+    database?: AnalysisJobCreationDatabase,
+  ): Promise<T> {
+    if (database) {
+      return this.createExclusiveInTransaction(
+        repositoryId,
+        operation,
+        database,
+      );
+    }
+
+    return this.prisma.$transaction(
+      (transaction) =>
+        this.createExclusiveInTransaction(repositoryId, operation, transaction),
+      {
+        isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
+        maxWait: 5000,
+        timeout: 10000,
+      },
+    );
+  }
 
   create(
     data: CreateAnalysisJobRecordInput,
@@ -277,5 +311,33 @@ export class AnalysisJobRepository {
     });
 
     return result.count === 1;
+  }
+
+  private async createExclusiveInTransaction<T>(
+    repositoryId: number,
+    operation: (database: AnalysisJobCreationDatabase) => Promise<T>,
+    database: AnalysisJobCreationDatabase,
+  ): Promise<T> {
+    const lockScope = `analysis-job-repository:${repositoryId}`;
+    const lockId = createHash('sha256')
+      .update(lockScope)
+      .digest()
+      .readBigInt64BE();
+    await database.$executeRaw`SELECT pg_advisory_xact_lock(${lockId})`;
+
+    const active = await database.analysisJob.findFirst({
+      where: {
+        repositoryId,
+        status: {
+          in: [AnalysisJobStatus.QUEUED, AnalysisJobStatus.RUNNING],
+        },
+      },
+      select: { id: true },
+    });
+    if (active) {
+      throw new ActiveAnalysisJobExistsError(repositoryId);
+    }
+
+    return operation(database);
   }
 }

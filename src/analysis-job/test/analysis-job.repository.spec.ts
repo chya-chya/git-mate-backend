@@ -1,6 +1,7 @@
 import { AnalysisJobStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
+  ActiveAnalysisJobExistsError,
   AnalysisJobRepository,
   TransitionAnalysisJobRecordInput,
 } from '../analysis-job.repository';
@@ -18,6 +19,45 @@ describe('AnalysisJobRepository', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+  });
+
+  it('checks for an active Job under the repository advisory lock', async () => {
+    const transaction = {
+      $executeRaw: jest.fn().mockResolvedValue(0),
+      analysisJob: { findFirst: jest.fn().mockResolvedValue(null) },
+    };
+    const operation = jest.fn().mockResolvedValue('created');
+
+    await expect(
+      repository.createExclusive(9, operation, transaction as never),
+    ).resolves.toBe('created');
+
+    expect(transaction.$executeRaw).toHaveBeenCalledTimes(1);
+    expect(transaction.analysisJob.findFirst).toHaveBeenCalledWith({
+      where: {
+        repositoryId: 9,
+        status: {
+          in: [AnalysisJobStatus.QUEUED, AnalysisJobStatus.RUNNING],
+        },
+      },
+      select: { id: true },
+    });
+    expect(operation).toHaveBeenCalledWith(transaction);
+  });
+
+  it('rejects creation when the locked repository already has an active Job', async () => {
+    const transaction = {
+      $executeRaw: jest.fn().mockResolvedValue(0),
+      analysisJob: {
+        findFirst: jest.fn().mockResolvedValue({ id: 'active-job' }),
+      },
+    };
+    const operation = jest.fn();
+
+    await expect(
+      repository.createExclusive(9, operation, transaction as never),
+    ).rejects.toBeInstanceOf(ActiveAnalysisJobExistsError);
+    expect(operation).not.toHaveBeenCalled();
   });
 
   it('guards success with the expected status, lease, and linked report', async () => {

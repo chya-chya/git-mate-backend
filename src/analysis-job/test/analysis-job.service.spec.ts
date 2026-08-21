@@ -16,7 +16,14 @@ import {
 import { CURRENT_ANALYSIS_EXECUTION_VERSION } from '../../analysis/analysis-execution-version';
 
 describe('AnalysisJobService', () => {
+  const creationDatabase = { analysisJob: {} };
   const repository = {
+    createExclusive: jest.fn(
+      (
+        _repositoryId: number,
+        operation: (database: typeof creationDatabase) => Promise<unknown>,
+      ) => operation(creationDatabase),
+    ),
     create: jest.fn(),
     findById: jest.fn(),
     findRunningByLease: jest.fn(),
@@ -72,6 +79,14 @@ describe('AnalysisJobService', () => {
     expect(firstRecord.requestHash).toMatch(/^[0-9a-f]{64}$/);
     expect(secondRecord.requestHash).toBe(firstRecord.requestHash);
     expect(firstRecord).toMatchObject(CURRENT_ANALYSIS_EXECUTION_VERSION);
+    expect(repository.createExclusive).toHaveBeenCalledWith(
+      9,
+      expect.any(Function),
+    );
+    expect(repository.create).toHaveBeenCalledWith(
+      expect.any(Object),
+      creationDatabase,
+    );
   });
 
   it('rejects an invalid status transition', async () => {

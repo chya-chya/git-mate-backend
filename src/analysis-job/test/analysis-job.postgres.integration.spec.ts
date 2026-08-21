@@ -9,7 +9,10 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { AnalysisJobApiRepository } from '../analysis-job-api.repository';
 import { AnalysisJobApiService } from '../analysis-job-api.service';
 import { AnalysisJobResponseMapper } from '../analysis-job-response.mapper';
-import { AnalysisJobRepository } from '../analysis-job.repository';
+import {
+  ActiveAnalysisJobExistsError,
+  AnalysisJobRepository,
+} from '../analysis-job.repository';
 import {
   AnalysisJobFailureCode,
   AnalysisJobService,
@@ -99,12 +102,12 @@ describeDatabase('AnalysisJob PostgreSQL invariants', () => {
     prismaPool = new Pool({ connectionString: databaseUrl });
     prisma = new PrismaClient({ adapter: new PrismaPg(prismaPool) });
     await prisma.$connect();
-    analysisJobService = new AnalysisJobService(
-      new AnalysisJobRepository(prisma),
-    );
+    const analysisJobRepository = new AnalysisJobRepository(prisma);
+    analysisJobService = new AnalysisJobService(analysisJobRepository);
     analysisJobApiService = new AnalysisJobApiService(
       new AnalysisJobApiRepository(prisma as unknown as PrismaService),
       new AnalysisJobResponseMapper(),
+      analysisJobRepository,
     );
   });
 
@@ -374,11 +377,152 @@ describeDatabase('AnalysisJob PostgreSQL invariants', () => {
     ).resolves.toBe(1);
   });
 
+  it('allows only one active Job across API and synchronous creation paths', async () => {
+    const repository = await prisma.repository.create({
+      data: {
+        githubRepoId: 'integration-cross-path-active-job',
+        fullName: 'owner/cross-path-active-job',
+        ownerId: userId,
+      },
+    });
+
+    const results = await Promise.allSettled([
+      analysisJobApiService.create(
+        userId,
+        repository.githubRepoId,
+        'integration-cross-path-api',
+      ),
+      analysisJobService.create({
+        userId,
+        repositoryId: repository.id,
+        idempotencyKey: 'sync:integration-cross-path',
+      }),
+    ]);
+
+    expect(
+      results.filter((result) => result.status === 'fulfilled'),
+    ).toHaveLength(1);
+    const rejected = results.find(
+      (result): result is PromiseRejectedResult => result.status === 'rejected',
+    );
+    const rejectionReason: unknown = rejected?.reason;
+    const isApiConflict =
+      rejectionReason instanceof HttpException &&
+      typeof rejectionReason.getResponse() === 'object' &&
+      rejectionReason.getResponse() !== null &&
+      (rejectionReason.getResponse() as Record<string, unknown>).code ===
+        'ACTIVE_JOB_EXISTS';
+    expect(
+      rejectionReason instanceof ActiveAnalysisJobExistsError || isApiConflict,
+    ).toBe(true);
+    await expect(
+      prisma.analysisJob.count({
+        where: {
+          repositoryId: repository.id,
+          status: {
+            in: [AnalysisJobStatus.QUEUED, AnalysisJobStatus.RUNNING],
+          },
+        },
+      }),
+    ).resolves.toBe(1);
+  });
+
+  it('allows at most five concurrent API Job creations across Lambda instances', async () => {
+    const secondApiService = new AnalysisJobApiService(
+      new AnalysisJobApiRepository(prisma as unknown as PrismaService),
+      new AnalysisJobResponseMapper(),
+      new AnalysisJobRepository(prisma as unknown as PrismaService),
+    );
+    const apiInstances = [analysisJobApiService, secondApiService];
+    const rateLimitedUser = await prisma.user.create({
+      data: {
+        githubId: 'rate-limited-user',
+        username: 'rate-limited-user',
+      },
+    });
+    const repositories = await Promise.all(
+      Array.from({ length: 6 }, (_, index) =>
+        prisma.repository.create({
+          data: {
+            githubRepoId: `integration-rate-limit-${index}`,
+            fullName: `owner/rate-limit-${index}`,
+            ownerId: rateLimitedUser.id,
+          },
+        }),
+      ),
+    );
+
+    const results = await Promise.allSettled(
+      repositories.map((repository, index) =>
+        apiInstances[index % apiInstances.length].create(
+          rateLimitedUser.id,
+          repository.githubRepoId,
+          `integration-rate-limit-key-${index}`,
+        ),
+      ),
+    );
+
+    expect(
+      results.filter((result) => result.status === 'fulfilled'),
+    ).toHaveLength(5);
+    const rejected = results.find(
+      (result): result is PromiseRejectedResult => result.status === 'rejected',
+    );
+    const rejectionReason: unknown = rejected?.reason;
+    expect(rejectionReason).toBeInstanceOf(HttpException);
+    if (!(rejectionReason instanceof HttpException)) {
+      throw new Error('Expected an HTTP rate limit error');
+    }
+    expect(rejectionReason.getStatus()).toBe(429);
+    const rejectionResponse = rejectionReason.getResponse();
+    expect(
+      typeof rejectionResponse === 'object' && rejectionResponse !== null
+        ? (rejectionResponse as Record<string, unknown>).code
+        : undefined,
+    ).toBe('RATE_LIMITED');
+    await expect(
+      prisma.analysisJob.count({ where: { userId: rateLimitedUser.id } }),
+    ).resolves.toBe(5);
+  });
+
+  it('keeps lastSyncTime monotonic when an older sync finishes last', async () => {
+    const olderSyncStartedAt = new Date('2026-08-21T11:00:00.000Z');
+    const newerSyncStartedAt = new Date('2026-08-21T11:05:00.000Z');
+
+    await prisma.repository.updateMany({
+      where: {
+        id: repositoryId,
+        OR: [
+          { lastSyncTime: null },
+          { lastSyncTime: { lt: newerSyncStartedAt } },
+        ],
+      },
+      data: { lastSyncTime: newerSyncStartedAt },
+    });
+    await prisma.repository.updateMany({
+      where: {
+        id: repositoryId,
+        OR: [
+          { lastSyncTime: null },
+          { lastSyncTime: { lt: olderSyncStartedAt } },
+        ],
+      },
+      data: { lastSyncTime: olderSyncStartedAt },
+    });
+
+    await expect(
+      prisma.repository.findUniqueOrThrow({
+        where: { id: repositoryId },
+        select: { lastSyncTime: true },
+      }),
+    ).resolves.toEqual({ lastSyncTime: newerSyncStartedAt });
+  });
+
   async function createRunningJob(idempotencyKey: string) {
     const job = await analysisJobService.create({
       userId,
       repositoryId,
-      idempotencyKey,
+      idempotencyKey: `sync:${idempotencyKey}`,
     });
     const leaseToken = `lease-${idempotencyKey}`;
     await analysisJobService.transition({

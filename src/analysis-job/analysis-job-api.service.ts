@@ -19,6 +19,10 @@ import {
   AnalysisJobCursor,
 } from './analysis-job-api.types';
 import { AnalysisJobResponseMapper } from './analysis-job-response.mapper';
+import {
+  ActiveAnalysisJobExistsError,
+  AnalysisJobRepository,
+} from './analysis-job.repository';
 
 type JobRequest =
   | { type: 'CREATE'; githubRepoId: string }
@@ -29,6 +33,7 @@ export class AnalysisJobApiService {
   constructor(
     private readonly repository: AnalysisJobApiRepository,
     private readonly responseMapper: AnalysisJobResponseMapper,
+    private readonly creationRepository: AnalysisJobRepository,
   ) {}
 
   async create(
@@ -129,6 +134,24 @@ export class AnalysisJobApiService {
           return this.resolveExisting(existing, requestHash);
         }
 
+        await this.repository.acquireTransactionLock(
+          `analysis-job-rate-limit:${userId}`,
+          database,
+        );
+        const rateLimit = await this.repository.getCreationRateLimitStatus(
+          userId,
+          database,
+        );
+        if (rateLimit.isBlocked) {
+          throw new HttpException(
+            {
+              code: 'RATE_LIMITED',
+              message: 'Analysis job creation rate limit exceeded.',
+            },
+            429,
+          );
+        }
+
         const githubRepoId =
           request.type === 'CREATE'
             ? request.githubRepoId
@@ -155,33 +178,23 @@ export class AnalysisJobApiService {
           );
         }
 
-        await this.repository.acquireTransactionLock(
-          `analysis-job-repository:${repository.id}`,
-          database,
-        );
-        const active = await this.repository.findActiveByRepositoryId(
+        return this.creationRepository.createExclusive(
           repository.id,
-          database,
-        );
-        if (active) {
-          throw this.conflict(
-            'ACTIVE_JOB_EXISTS',
-            'An active analysis job already exists for this repository.',
-          );
-        }
-
-        return this.repository.create(
-          {
-            userId,
-            repositoryId: repository.id,
-            idempotencyKey,
-            requestHash,
-            sourceCursor:
-              request.type === 'RETRY'
-                ? (retrySource?.sourceCursor ?? null)
-                : repository.lastSyncTime,
-            ...CURRENT_ANALYSIS_EXECUTION_VERSION,
-          },
+          (creationDatabase) =>
+            this.repository.create(
+              {
+                userId,
+                repositoryId: repository.id,
+                idempotencyKey,
+                requestHash,
+                sourceCursor:
+                  request.type === 'RETRY'
+                    ? (retrySource?.sourceCursor ?? null)
+                    : repository.lastSyncTime,
+                ...CURRENT_ANALYSIS_EXECUTION_VERSION,
+              },
+              creationDatabase,
+            ),
           database,
         );
       });
@@ -197,6 +210,12 @@ export class AnalysisJobApiService {
       }
       if (error instanceof HttpException) {
         throw error;
+      }
+      if (error instanceof ActiveAnalysisJobExistsError) {
+        throw this.conflict(
+          'ACTIVE_JOB_EXISTS',
+          'An active analysis job already exists for this repository.',
+        );
       }
       throw new ServiceUnavailableException({
         code: 'JOB_ACCEPTANCE_UNAVAILABLE',
