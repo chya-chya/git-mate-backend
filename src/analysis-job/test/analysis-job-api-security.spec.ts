@@ -1,6 +1,11 @@
-import { ExecutionContext, HttpException } from '@nestjs/common';
+import {
+  ExecutionContext,
+  ForbiddenException,
+  HttpException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AnalysisJobApiRepository } from '../analysis-job-api.repository';
+import { AnalysisJobJwtAuthGuard } from '../guards/analysis-job-jwt-auth.guard';
 import { AnalysisJobRateLimitGuard } from '../guards/analysis-job-rate-limit.guard';
 import { AsyncAnalysisEnabledGuard } from '../guards/async-analysis-enabled.guard';
 import { AnalysisJobUuidPipe } from '../pipes/analysis-job-uuid.pipe';
@@ -70,7 +75,7 @@ describe('Analysis Job API security boundaries', () => {
     expect(guard.canActivate()).toBe(true);
   });
 
-  it('uses the shared Job ledger for the five-per-minute user limit', async () => {
+  it('reports the shared Job ledger limit without blocking idempotent resolution', async () => {
     const getCreationRateLimitStatus = jest
       .fn<AnalysisJobApiRepository['getCreationRateLimitStatus']>()
       .mockResolvedValueOnce({
@@ -96,15 +101,22 @@ describe('Analysis Job API security boundaries', () => {
     } as unknown as AnalysisJobApiRepository);
 
     await expect(guard.canActivate(createHttpContext(7))).resolves.toBe(true);
-    await expectAsyncApiError(
-      guard.canActivate(createHttpContext(7)),
-      'RATE_LIMITED',
-    );
+    await expect(guard.canActivate(createHttpContext(7))).resolves.toBe(true);
     await expect(guard.canActivate(createHttpContext(8))).resolves.toBe(true);
 
     expect(getCreationRateLimitStatus).toHaveBeenNthCalledWith(1, 7);
     expect(getCreationRateLimitStatus).toHaveBeenNthCalledWith(2, 7);
     expect(getCreationRateLimitStatus).toHaveBeenNthCalledWith(3, 8);
+  });
+
+  it('preserves authorization errors raised by the JWT strategy', () => {
+    const guard = new AnalysisJobJwtAuthGuard();
+    const error = new ForbiddenException({
+      code: 'ACCOUNT_DEACTIVATED',
+      message: 'Account is deactivated',
+    });
+
+    expect(() => guard.handleRequest(error, null)).toThrow(error);
   });
 
   it('fails closed if the authenticated user is not available to the rate guard', async () => {

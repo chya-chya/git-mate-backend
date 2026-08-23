@@ -68,6 +68,7 @@ describe('Analysis Job API (e2e)', () => {
   let authenticated = true;
   let enabled = true;
   let userId = 7;
+  const getCreationRateLimitStatus = jest.fn();
   const service = {
     create: jest.fn().mockResolvedValue(createJobResponse()),
     retry: jest.fn().mockResolvedValue(createJobResponse()),
@@ -80,6 +81,12 @@ describe('Analysis Job API (e2e)', () => {
     enabled = true;
     userId = 7;
     jest.clearAllMocks();
+    getCreationRateLimitStatus.mockResolvedValue({
+      totalHits: 0,
+      remaining: 5,
+      retryAfterSeconds: 60,
+      isBlocked: false,
+    });
 
     const moduleBuilder = Test.createTestingModule({
       controllers: [AnalysisJobController],
@@ -94,7 +101,7 @@ describe('Analysis Job API (e2e)', () => {
         { provide: ConfigService, useValue: { get: jest.fn() } },
         {
           provide: AnalysisJobApiRepository,
-          useValue: { getCreationRateLimitStatus: jest.fn() },
+          useValue: { getCreationRateLimitStatus },
         },
       ],
     })
@@ -127,15 +134,6 @@ describe('Analysis Job API (e2e)', () => {
           }
           return true;
         },
-      })
-      .overrideGuard(AnalysisJobRateLimitGuard)
-      .useValue({
-        canActivate(context: ExecutionContext) {
-          expect(
-            context.switchToHttp().getRequest<TestAuthenticatedRequest>().user,
-          ).toEqual({ id: userId });
-          return true;
-        },
       });
 
     const moduleFixture = await moduleBuilder.compile();
@@ -163,6 +161,28 @@ describe('Analysis Job API (e2e)', () => {
       .expect(({ body }) => {
         expect(body).toMatchObject({ jobId: JOB_ID, status: 'QUEUED' });
       });
+
+    expect(service.create).toHaveBeenCalledWith(
+      7,
+      '12345678901234567890',
+      'request-1',
+    );
+  });
+
+  it('lets the service resolve an idempotent replay when the creation limit is full', async () => {
+    getCreationRateLimitStatus.mockResolvedValue({
+      totalHits: 5,
+      remaining: 0,
+      retryAfterSeconds: 18,
+      isBlocked: true,
+    });
+
+    await request(app.getHttpServer())
+      .post('/analysis/jobs')
+      .set('Idempotency-Key', 'request-1')
+      .send({ githubRepoId: '12345678901234567890' })
+      .expect(202)
+      .expect('Location', `/analysis/jobs/${JOB_ID}`);
 
     expect(service.create).toHaveBeenCalledWith(
       7,

@@ -241,7 +241,6 @@ export class AnalysisJobApiService {
     const canonicalRequest = JSON.stringify({
       userId,
       request,
-      ...CURRENT_ANALYSIS_EXECUTION_VERSION,
     });
     return createHash('sha256').update(canonicalRequest).digest('hex');
   }

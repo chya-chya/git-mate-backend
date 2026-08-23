@@ -1,7 +1,6 @@
 import {
   CanActivate,
   ExecutionContext,
-  HttpException,
   Injectable,
   ServiceUnavailableException,
   UnauthorizedException,
@@ -58,14 +57,10 @@ export class AnalysisJobRateLimitGuard implements CanActivate {
 
     if (record.isBlocked) {
       response.setHeader('Retry-After', record.retryAfterSeconds);
-      throw new HttpException(
-        {
-          code: 'RATE_LIMITED',
-          message: 'Analysis job creation rate limit exceeded.',
-        },
-        429,
-      );
     }
+
+    // The service enforces the limit transactionally after resolving an
+    // existing idempotency key. Blocking here would reject safe replays.
     return true;
   }
 }

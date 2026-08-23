@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   ConflictException,
   HttpException,
@@ -185,6 +186,24 @@ describe('AnalysisJobApiService', () => {
     );
   });
 
+  it('hashes only stable client request fields', async () => {
+    await service.create(7, '123456789', 'request-1');
+
+    const expectedHash = createHash('sha256')
+      .update(
+        JSON.stringify({
+          userId: 7,
+          request: { type: 'CREATE', githubRepoId: '123456789' },
+        }),
+      )
+      .digest('hex');
+
+    expect(repository.create).toHaveBeenCalledWith(
+      expect.objectContaining({ requestHash: expectedHash }),
+      database,
+    );
+  });
+
   it('rejects reuse of the same key for a different repository', async () => {
     await service.create(7, '123456789', 'request-1');
 
@@ -202,6 +221,22 @@ describe('AnalysisJobApiService', () => {
       service.create(7, '123456789', 'request-1'),
     ).resolves.toMatchObject({ jobId: first.jobId });
     expect(creationRepository.createExclusive).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns an identical request even when the creation limit is full', async () => {
+    const first = await service.create(7, '123456789', 'request-1');
+    repository.getCreationRateLimitStatus.mockClear();
+    repository.getCreationRateLimitStatus.mockResolvedValue({
+      totalHits: 5,
+      remaining: 0,
+      retryAfterSeconds: 18,
+      isBlocked: true,
+    });
+
+    await expect(
+      service.create(7, '123456789', 'request-1'),
+    ).resolves.toMatchObject({ jobId: first.jobId });
+    expect(repository.getCreationRateLimitStatus).not.toHaveBeenCalled();
   });
 
   it('blocks a new key when the repository already has an active Job', async () => {
