@@ -34,7 +34,14 @@ async function bootstrap() {
       'X-Requested-With',
       'Idempotency-Key',
     ],
-    exposedHeaders: ['Authorization', 'Location', 'Retry-After'],
+    exposedHeaders: [
+      'Authorization',
+      'Location',
+      'Retry-After',
+      'X-RateLimit-Limit-Analysis-Job',
+      'X-RateLimit-Remaining-Analysis-Job',
+      'X-RateLimit-Reset-Analysis-Job',
+    ],
   });
 
   // Global Validation Pipe

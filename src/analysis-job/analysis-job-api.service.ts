@@ -13,7 +13,10 @@ import {
   AnalysisJobResponseDto,
   ListAnalysisJobsQueryDto,
 } from './dto/analysis-job.dto';
-import { AnalysisJobApiRepository } from './analysis-job-api.repository';
+import {
+  AnalysisJobApiRepository,
+  AnalysisJobCreationRateLimitStatus,
+} from './analysis-job-api.repository';
 import {
   AnalysisJobApiRecord,
   AnalysisJobCursor,
@@ -28,6 +31,28 @@ type JobRequest =
   | { type: 'CREATE'; githubRepoId: string }
   | { type: 'RETRY'; sourceJobId: string };
 
+export interface AnalysisJobAcceptanceResponse {
+  job: AnalysisJobResponseDto;
+  rateLimit: AnalysisJobCreationRateLimitStatus;
+}
+
+interface AcceptedAnalysisJob {
+  record: AnalysisJobApiRecord;
+  rateLimit: AnalysisJobCreationRateLimitStatus;
+}
+
+export class AnalysisJobRateLimitExceededException extends HttpException {
+  constructor(readonly rateLimit: AnalysisJobCreationRateLimitStatus) {
+    super(
+      {
+        code: 'RATE_LIMITED',
+        message: 'Analysis job creation rate limit exceeded.',
+      },
+      429,
+    );
+  }
+}
+
 @Injectable()
 export class AnalysisJobApiService {
   constructor(
@@ -40,17 +65,20 @@ export class AnalysisJobApiService {
     userId: number,
     githubRepoId: string,
     idempotencyKey: string,
-  ): Promise<AnalysisJobResponseDto> {
+  ): Promise<AnalysisJobAcceptanceResponse> {
     const request: JobRequest = { type: 'CREATE', githubRepoId };
-    const job = await this.acceptJob(userId, idempotencyKey, request);
-    return this.responseMapper.toDto(job);
+    const accepted = await this.acceptJob(userId, idempotencyKey, request);
+    return {
+      job: this.responseMapper.toDto(accepted.record),
+      rateLimit: accepted.rateLimit,
+    };
   }
 
   async retry(
     userId: number,
     sourceJobId: string,
     idempotencyKey: string,
-  ): Promise<AnalysisJobResponseDto> {
+  ): Promise<AnalysisJobAcceptanceResponse> {
     const sourceJob = await this.repository.findOwnedById(userId, sourceJobId);
     if (!sourceJob) {
       throw this.notFound('JOB_NOT_FOUND', 'Analysis job was not found.');
@@ -66,13 +94,16 @@ export class AnalysisJobApiService {
     }
 
     const request: JobRequest = { type: 'RETRY', sourceJobId };
-    const job = await this.acceptJob(
+    const accepted = await this.acceptJob(
       userId,
       idempotencyKey,
       request,
       sourceJob,
     );
-    return this.responseMapper.toDto(job);
+    return {
+      job: this.responseMapper.toDto(accepted.record),
+      rateLimit: accepted.rateLimit,
+    };
   }
 
   async findOne(
@@ -116,7 +147,7 @@ export class AnalysisJobApiService {
     idempotencyKey: string,
     request: JobRequest,
     retrySource?: AnalysisJobApiRecord,
-  ): Promise<AnalysisJobApiRecord> {
+  ): Promise<AcceptedAnalysisJob> {
     const requestHash = this.createRequestHash(userId, request);
 
     try {
@@ -131,7 +162,13 @@ export class AnalysisJobApiService {
           database,
         );
         if (existing) {
-          return this.resolveExisting(existing, requestHash);
+          return {
+            record: this.resolveExisting(existing, requestHash),
+            rateLimit: await this.repository.getCreationRateLimitStatus(
+              userId,
+              database,
+            ),
+          };
         }
 
         await this.repository.acquireTransactionLock(
@@ -143,13 +180,7 @@ export class AnalysisJobApiService {
           database,
         );
         if (rateLimit.isBlocked) {
-          throw new HttpException(
-            {
-              code: 'RATE_LIMITED',
-              message: 'Analysis job creation rate limit exceeded.',
-            },
-            429,
-          );
+          throw new AnalysisJobRateLimitExceededException(rateLimit);
         }
 
         const githubRepoId =
@@ -178,7 +209,7 @@ export class AnalysisJobApiService {
           );
         }
 
-        return this.creationRepository.createExclusive(
+        const record = await this.creationRepository.createExclusive(
           repository.id,
           (creationDatabase) =>
             this.repository.create(
@@ -197,6 +228,13 @@ export class AnalysisJobApiService {
             ),
           database,
         );
+        return {
+          record,
+          rateLimit: await this.repository.getCreationRateLimitStatus(
+            userId,
+            database,
+          ),
+        };
       });
     } catch (error) {
       if (this.isIdempotencyUniqueConflict(error)) {
@@ -205,7 +243,10 @@ export class AnalysisJobApiService {
           idempotencyKey,
         );
         if (existing) {
-          return this.resolveExisting(existing, requestHash);
+          return {
+            record: this.resolveExisting(existing, requestHash),
+            rateLimit: await this.repository.getCreationRateLimitStatus(userId),
+          };
         }
       }
       if (error instanceof HttpException) {

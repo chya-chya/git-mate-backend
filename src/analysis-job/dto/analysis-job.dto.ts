@@ -174,6 +174,7 @@ export class AnalysisJobApiErrorDto {
     enum: [
       'INVALID_REQUEST',
       'UNAUTHORIZED',
+      'ACCOUNT_DEACTIVATED',
       'REPOSITORY_NOT_FOUND',
       'JOB_NOT_FOUND',
       'IDEMPOTENCY_KEY_REUSED',

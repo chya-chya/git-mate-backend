@@ -14,7 +14,10 @@ import { AnalysisJobStage, AnalysisJobStatus } from '@prisma/client';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { AnalysisJobApiRepository } from '../src/analysis-job/analysis-job-api.repository';
-import { AnalysisJobApiService } from '../src/analysis-job/analysis-job-api.service';
+import {
+  AnalysisJobApiService,
+  AnalysisJobRateLimitExceededException,
+} from '../src/analysis-job/analysis-job-api.service';
 import { AnalysisJobController } from '../src/analysis-job/analysis-job.controller';
 import { AnalysisJobValidationExceptionFilter } from '../src/analysis-job/filters/analysis-job-validation-exception.filter';
 import { AnalysisJobJwtAuthGuard } from '../src/analysis-job/guards/analysis-job-jwt-auth.guard';
@@ -63,6 +66,17 @@ function createJobResponse(
   };
 }
 
+function createJobAcceptance(
+  rateLimit = {
+    totalHits: 1,
+    remaining: 4,
+    retryAfterSeconds: 60,
+    isBlocked: false,
+  },
+) {
+  return { job: createJobResponse(), rateLimit };
+}
+
 describe('Analysis Job API (e2e)', () => {
   let app: INestApplication<App>;
   let authenticated = true;
@@ -70,8 +84,8 @@ describe('Analysis Job API (e2e)', () => {
   let userId = 7;
   const getCreationRateLimitStatus = jest.fn();
   const service = {
-    create: jest.fn().mockResolvedValue(createJobResponse()),
-    retry: jest.fn().mockResolvedValue(createJobResponse()),
+    create: jest.fn().mockResolvedValue(createJobAcceptance()),
+    retry: jest.fn().mockResolvedValue(createJobAcceptance()),
     findOne: jest.fn().mockResolvedValue(createJobResponse()),
     list: jest.fn().mockResolvedValue({ items: [], nextCursor: null }),
   };
@@ -158,6 +172,7 @@ describe('Analysis Job API (e2e)', () => {
       .expect(202)
       .expect('Location', `/analysis/jobs/${JOB_ID}`)
       .expect('Retry-After', '2')
+      .expect('X-RateLimit-Remaining-Analysis-Job', '4')
       .expect(({ body }) => {
         expect(body).toMatchObject({ jobId: JOB_ID, status: 'QUEUED' });
       });
@@ -176,19 +191,48 @@ describe('Analysis Job API (e2e)', () => {
       retryAfterSeconds: 18,
       isBlocked: true,
     });
+    service.create.mockResolvedValueOnce(
+      createJobAcceptance({
+        totalHits: 5,
+        remaining: 0,
+        retryAfterSeconds: 18,
+        isBlocked: true,
+      }),
+    );
 
     await request(app.getHttpServer())
       .post('/analysis/jobs')
       .set('Idempotency-Key', 'request-1')
       .send({ githubRepoId: '12345678901234567890' })
       .expect(202)
-      .expect('Location', `/analysis/jobs/${JOB_ID}`);
+      .expect('Location', `/analysis/jobs/${JOB_ID}`)
+      .expect('X-RateLimit-Remaining-Analysis-Job', '0');
 
     expect(service.create).toHaveBeenCalledWith(
       7,
       '12345678901234567890',
       'request-1',
     );
+  });
+
+  it('returns authoritative reset headers when a concurrent request reaches the limit', async () => {
+    service.create.mockRejectedValueOnce(
+      new AnalysisJobRateLimitExceededException({
+        totalHits: 5,
+        remaining: 0,
+        retryAfterSeconds: 18,
+        isBlocked: true,
+      }),
+    );
+
+    await request(app.getHttpServer())
+      .post('/analysis/jobs')
+      .set('Idempotency-Key', 'request-6')
+      .send({ githubRepoId: '12345678901234567890' })
+      .expect(429)
+      .expect('Retry-After', '18')
+      .expect('X-RateLimit-Remaining-Analysis-Job', '0')
+      .expect((response) => expectResponseCode(response, 'RATE_LIMITED'));
   });
 
   it('rejects missing authentication before the feature and rate guards', async () => {
@@ -308,8 +352,30 @@ describe('Analysis Job API (e2e)', () => {
       ]),
     );
     const responses = document.paths['/analysis/jobs']?.post?.responses;
-    for (const status of ['202', '400', '401', '404', '409', '429', '503']) {
+    for (const status of [
+      '202',
+      '400',
+      '401',
+      '403',
+      '404',
+      '409',
+      '429',
+      '503',
+    ]) {
       expect(responses).toHaveProperty(status);
+    }
+    expect(responses?.['202']?.headers).toHaveProperty(
+      'X-RateLimit-Remaining-Analysis-Job',
+    );
+    expect(responses?.['429']?.headers).toHaveProperty('Retry-After');
+    const protectedOperations = [
+      document.paths['/analysis/jobs']?.post,
+      document.paths['/analysis/jobs']?.get,
+      document.paths['/analysis/jobs/{id}']?.get,
+      document.paths['/analysis/jobs/{id}/retry']?.post,
+    ];
+    for (const operation of protectedOperations) {
+      expect(operation?.responses).toHaveProperty('403');
     }
     const repositoryIdParameter = document.paths[
       '/analysis/jobs'
@@ -323,5 +389,8 @@ describe('Analysis Job API (e2e)', () => {
     expect(schemas).toHaveProperty('AnalysisJobResponseDto');
     expect(schemas).toHaveProperty('AnalysisJobListResponseDto');
     expect(schemas).toHaveProperty('AnalysisJobApiErrorDto');
+    expect(JSON.stringify(schemas?.AnalysisJobApiErrorDto)).toContain(
+      'ACCOUNT_DEACTIVATED',
+    );
   });
 });

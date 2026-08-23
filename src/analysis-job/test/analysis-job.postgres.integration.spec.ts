@@ -314,7 +314,7 @@ describeDatabase('AnalysisJob PostgreSQL invariants', () => {
       ),
     ]);
 
-    expect(second.jobId).toBe(first.jobId);
+    expect(second.job.jobId).toBe(first.job.jobId);
     await expect(
       prisma.analysisJob.count({
         where: {
@@ -425,6 +425,78 @@ describeDatabase('AnalysisJob PostgreSQL invariants', () => {
         },
       }),
     ).resolves.toBe(1);
+  });
+
+  it('recovers stale synchronous and expired leased Jobs under the repository lock', async () => {
+    const staleQueuedRepository = await prisma.repository.create({
+      data: {
+        githubRepoId: 'integration-stale-queued-job',
+        fullName: 'owner/stale-queued-job',
+        ownerId: userId,
+      },
+    });
+    const staleQueued = await prisma.analysisJob.create({
+      data: {
+        userId,
+        repositoryId: staleQueuedRepository.id,
+        idempotencyKey: 'sync:stale-queued',
+        requestHash: 'stale-queued',
+        createdAt: new Date('2026-08-01T00:00:00.000Z'),
+      },
+    });
+
+    await analysisJobService.create({
+      userId,
+      repositoryId: staleQueuedRepository.id,
+      idempotencyKey: 'sync:replacement-queued',
+    });
+
+    await expect(
+      prisma.analysisJob.findUniqueOrThrow({ where: { id: staleQueued.id } }),
+    ).resolves.toMatchObject({
+      status: AnalysisJobStatus.FAILED,
+      totalTokens: 0,
+      lastErrorCode: 'ANALYSIS_FAILED',
+      errorRetryable: true,
+    });
+
+    const staleRunningRepository = await prisma.repository.create({
+      data: {
+        githubRepoId: 'integration-stale-running-job',
+        fullName: 'owner/stale-running-job',
+        ownerId: userId,
+      },
+    });
+    const staleRunning = await prisma.analysisJob.create({
+      data: {
+        userId,
+        repositoryId: staleRunningRepository.id,
+        idempotencyKey: 'sync:stale-running',
+        requestHash: 'stale-running',
+        status: AnalysisJobStatus.RUNNING,
+        stage: 'ANALYZING',
+        reservedTokens: 20,
+        leaseToken: 'expired-lease',
+        leaseExpiresAt: new Date('2026-08-01T00:00:00.000Z'),
+        startedAt: new Date('2026-08-01T00:00:00.000Z'),
+      },
+    });
+
+    await analysisJobService.create({
+      userId,
+      repositoryId: staleRunningRepository.id,
+      idempotencyKey: 'sync:replacement-running',
+    });
+
+    await expect(
+      prisma.analysisJob.findUniqueOrThrow({ where: { id: staleRunning.id } }),
+    ).resolves.toMatchObject({
+      status: AnalysisJobStatus.FAILED,
+      tokensSettledAt: null,
+      lastErrorCode: 'PROVIDER_RECONCILIATION_REQUIRED',
+      errorRetryable: false,
+      leaseToken: null,
+    });
   });
 
   it('allows at most five concurrent API Job creations across Lambda instances', async () => {

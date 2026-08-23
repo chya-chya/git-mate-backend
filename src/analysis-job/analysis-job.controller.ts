@@ -21,7 +21,15 @@ import {
 } from '@nestjs/swagger';
 import { AnalysisJobStatus } from '@prisma/client';
 import type { Request, Response } from 'express';
-import { AnalysisJobApiService } from './analysis-job-api.service';
+import {
+  AnalysisJobAcceptanceResponse,
+  AnalysisJobApiService,
+  AnalysisJobRateLimitExceededException,
+} from './analysis-job-api.service';
+import {
+  ANALYSIS_JOB_CREATION_RATE_LIMIT,
+  AnalysisJobCreationRateLimitStatus,
+} from './analysis-job-api.repository';
 import {
   AnalysisJobApiErrorDto,
   AnalysisJobListResponseDto,
@@ -47,7 +55,23 @@ const IDEMPOTENCY_HEADER = {
   schema: { type: 'string', minLength: 1, maxLength: 128 },
 };
 
+const CREATION_RATE_LIMIT_RESPONSE_HEADERS = {
+  'X-RateLimit-Limit-Analysis-Job': {
+    description: '사용자별 분당 Job 생성 한도',
+    schema: { type: 'integer', example: 5 },
+  },
+  'X-RateLimit-Remaining-Analysis-Job': {
+    description: '현재 응답 처리 후 남은 Job 생성 가능 횟수',
+    schema: { type: 'integer', example: 4 },
+  },
+  'X-RateLimit-Reset-Analysis-Job': {
+    description: '생성 한도가 복구되기까지 남은 시간(초)',
+    schema: { type: 'integer', example: 60 },
+  },
+};
+
 const ACCEPTED_RESPONSE_HEADERS = {
+  ...CREATION_RATE_LIMIT_RESPONSE_HEADERS,
   Location: {
     description: '접수된 Job의 상태 조회 경로',
     schema: { type: 'string' },
@@ -55,6 +79,14 @@ const ACCEPTED_RESPONSE_HEADERS = {
   'Retry-After': {
     description: '권장 재조회 대기 시간(초)',
     schema: { type: 'integer', example: 2 },
+  },
+};
+
+const RATE_LIMITED_RESPONSE_HEADERS = {
+  ...CREATION_RATE_LIMIT_RESPONSE_HEADERS,
+  'Retry-After': {
+    description: '다음 Job 생성 요청까지 대기할 시간(초)',
+    schema: { type: 'integer', example: 18 },
   },
 };
 
@@ -74,8 +106,24 @@ function setPollingHeaders(response: Response, job: AnalysisJobResponseDto) {
   }
 }
 
+function setCreationRateLimitHeaders(
+  response: Response,
+  rateLimit: AnalysisJobCreationRateLimitStatus,
+) {
+  response.setHeader(
+    'X-RateLimit-Limit-Analysis-Job',
+    ANALYSIS_JOB_CREATION_RATE_LIMIT,
+  );
+  response.setHeader('X-RateLimit-Remaining-Analysis-Job', rateLimit.remaining);
+  response.setHeader(
+    'X-RateLimit-Reset-Analysis-Job',
+    rateLimit.retryAfterSeconds,
+  );
+}
+
 @ApiTags('Analysis Jobs')
 @ApiBearerAuth()
+@ApiResponse({ status: 403, type: AnalysisJobApiErrorDto })
 @UseGuards(AnalysisJobJwtAuthGuard, AsyncAnalysisEnabledGuard)
 @UseFilters(AnalysisJobValidationExceptionFilter)
 @Controller('analysis/jobs')
@@ -99,7 +147,11 @@ export class AnalysisJobController {
   @ApiResponse({ status: 401, type: AnalysisJobApiErrorDto })
   @ApiResponse({ status: 404, type: AnalysisJobApiErrorDto })
   @ApiResponse({ status: 409, type: AnalysisJobApiErrorDto })
-  @ApiResponse({ status: 429, type: AnalysisJobApiErrorDto })
+  @ApiResponse({
+    status: 429,
+    type: AnalysisJobApiErrorDto,
+    headers: RATE_LIMITED_RESPONSE_HEADERS,
+  })
   @ApiResponse({ status: 503, type: AnalysisJobApiErrorDto })
   async create(
     @Body() body: CreateAnalysisJobDto,
@@ -108,10 +160,13 @@ export class AnalysisJobController {
     @Res({ passthrough: true }) response: Response,
   ): Promise<AnalysisJobResponseDto> {
     const idempotencyKey = this.idempotencyKeyPipe.transform(rawIdempotencyKey);
-    const job = await this.analysisJobApiService.create(
-      request.user.id,
-      body.githubRepoId,
-      idempotencyKey,
+    const job = await this.acceptWithRateLimitHeaders(
+      response,
+      this.analysisJobApiService.create(
+        request.user.id,
+        body.githubRepoId,
+        idempotencyKey,
+      ),
     );
     response.setHeader('Location', job.links.self);
     setPollingHeaders(response, job);
@@ -187,7 +242,11 @@ export class AnalysisJobController {
   @ApiResponse({ status: 401, type: AnalysisJobApiErrorDto })
   @ApiResponse({ status: 404, type: AnalysisJobApiErrorDto })
   @ApiResponse({ status: 409, type: AnalysisJobApiErrorDto })
-  @ApiResponse({ status: 429, type: AnalysisJobApiErrorDto })
+  @ApiResponse({
+    status: 429,
+    type: AnalysisJobApiErrorDto,
+    headers: RATE_LIMITED_RESPONSE_HEADERS,
+  })
   @ApiResponse({ status: 503, type: AnalysisJobApiErrorDto })
   async retry(
     @Param('id', AnalysisJobUuidPipe) jobId: string,
@@ -196,13 +255,29 @@ export class AnalysisJobController {
     @Res({ passthrough: true }) response: Response,
   ): Promise<AnalysisJobResponseDto> {
     const idempotencyKey = this.idempotencyKeyPipe.transform(rawIdempotencyKey);
-    const job = await this.analysisJobApiService.retry(
-      request.user.id,
-      jobId,
-      idempotencyKey,
+    const job = await this.acceptWithRateLimitHeaders(
+      response,
+      this.analysisJobApiService.retry(request.user.id, jobId, idempotencyKey),
     );
     response.setHeader('Location', job.links.self);
     setPollingHeaders(response, job);
     return job;
+  }
+
+  private async acceptWithRateLimitHeaders(
+    response: Response,
+    operation: Promise<AnalysisJobAcceptanceResponse>,
+  ): Promise<AnalysisJobResponseDto> {
+    try {
+      const accepted = await operation;
+      setCreationRateLimitHeaders(response, accepted.rateLimit);
+      return accepted.job;
+    } catch (error) {
+      if (error instanceof AnalysisJobRateLimitExceededException) {
+        setCreationRateLimitHeaders(response, error.rateLimit);
+        response.setHeader('Retry-After', error.rateLimit.retryAfterSeconds);
+      }
+      throw error;
+    }
   }
 }

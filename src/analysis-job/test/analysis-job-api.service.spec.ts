@@ -172,7 +172,7 @@ describe('AnalysisJobApiService', () => {
     const first = await service.create(7, '123456789', 'request-1');
     const repeated = await service.create(7, '123456789', 'request-1');
 
-    expect(repeated.jobId).toBe(first.jobId);
+    expect(repeated.job.jobId).toBe(first.job.jobId);
     expect(repository.create).toHaveBeenCalledTimes(1);
     expect(repository.acquireTransactionLock).toHaveBeenNthCalledWith(
       1,
@@ -204,6 +204,34 @@ describe('AnalysisJobApiService', () => {
     );
   });
 
+  it('returns the post-creation rate-limit status', async () => {
+    repository.getCreationRateLimitStatus
+      .mockResolvedValueOnce({
+        totalHits: 4,
+        remaining: 1,
+        retryAfterSeconds: 30,
+        isBlocked: false,
+      })
+      .mockResolvedValueOnce({
+        totalHits: 5,
+        remaining: 0,
+        retryAfterSeconds: 29,
+        isBlocked: true,
+      });
+
+    await expect(
+      service.create(7, '123456789', 'request-1'),
+    ).resolves.toMatchObject({
+      rateLimit: {
+        totalHits: 5,
+        remaining: 0,
+        retryAfterSeconds: 29,
+        isBlocked: true,
+      },
+    });
+    expect(repository.getCreationRateLimitStatus).toHaveBeenCalledTimes(2);
+  });
+
   it('rejects reuse of the same key for a different repository', async () => {
     await service.create(7, '123456789', 'request-1');
 
@@ -219,7 +247,7 @@ describe('AnalysisJobApiService', () => {
 
     await expect(
       service.create(7, '123456789', 'request-1'),
-    ).resolves.toMatchObject({ jobId: first.jobId });
+    ).resolves.toMatchObject({ job: { jobId: first.job.jobId } });
     expect(creationRepository.createExclusive).toHaveBeenCalledTimes(1);
   });
 
@@ -233,10 +261,16 @@ describe('AnalysisJobApiService', () => {
       isBlocked: true,
     });
 
-    await expect(
-      service.create(7, '123456789', 'request-1'),
-    ).resolves.toMatchObject({ jobId: first.jobId });
-    expect(repository.getCreationRateLimitStatus).not.toHaveBeenCalled();
+    const repeated = await service.create(7, '123456789', 'request-1');
+
+    expect(repeated).toMatchObject({
+      job: { jobId: first.job.jobId },
+      rateLimit: { remaining: 0, isBlocked: true },
+    });
+    expect(repository.getCreationRateLimitStatus).toHaveBeenCalledWith(
+      7,
+      database,
+    );
   });
 
   it('blocks a new key when the repository already has an active Job', async () => {
@@ -273,7 +307,7 @@ describe('AnalysisJobApiService', () => {
 
     await expect(
       service.create(7, '123456789', 'request-1'),
-    ).resolves.toMatchObject({ jobId: first.jobId });
+    ).resolves.toMatchObject({ job: { jobId: first.job.jobId } });
   });
 
   it('creates a retry as a new Job without mutating the source', async () => {
@@ -299,7 +333,7 @@ describe('AnalysisJobApiService', () => {
 
     const retried = await service.retry(7, FIRST_JOB_ID, 'retry-1');
 
-    expect(retried.jobId).toBe(RETRY_JOB_ID);
+    expect(retried.job.jobId).toBe(RETRY_JOB_ID);
     expect(source.status).toBe(AnalysisJobStatus.FAILED);
     expect(repository.create).toHaveBeenCalledWith(
       expect.objectContaining({
