@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import {
   AnalysisJob,
@@ -40,6 +41,23 @@ export interface AnalysisJobTransitionData {
 }
 
 export type AnalysisJobDatabase = Pick<Prisma.TransactionClient, 'analysisJob'>;
+
+export type AnalysisJobCreationDatabase = Prisma.TransactionClient;
+
+export const ANALYSIS_JOB_STALE_TIMEOUT_MS = 15 * 60 * 1000;
+
+const STALE_JOB_ERROR_MESSAGES = {
+  ANALYSIS_FAILED: 'Analysis failed.',
+  PROVIDER_RECONCILIATION_REQUIRED:
+    'The provider charge requires reconciliation.',
+} as const;
+
+export class ActiveAnalysisJobExistsError extends Error {
+  constructor(repositoryId: number) {
+    super(`Repository ${repositoryId} already has an active analysis job`);
+    this.name = ActiveAnalysisJobExistsError.name;
+  }
+}
 
 export type RunningAnalysisJobContext = Pick<
   AnalysisJob,
@@ -129,6 +147,30 @@ export type TransitionAnalysisJobRecordInput =
 @Injectable()
 export class AnalysisJobRepository {
   constructor(private readonly prisma: PrismaService) {}
+
+  createExclusive<T>(
+    repositoryId: number,
+    operation: (database: AnalysisJobCreationDatabase) => Promise<T>,
+    database?: AnalysisJobCreationDatabase,
+  ): Promise<T> {
+    if (database) {
+      return this.createExclusiveInTransaction(
+        repositoryId,
+        operation,
+        database,
+      );
+    }
+
+    return this.prisma.$transaction(
+      (transaction) =>
+        this.createExclusiveInTransaction(repositoryId, operation, transaction),
+      {
+        isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
+        maxWait: 5000,
+        timeout: 10000,
+      },
+    );
+  }
 
   create(
     data: CreateAnalysisJobRecordInput,
@@ -277,5 +319,112 @@ export class AnalysisJobRepository {
     });
 
     return result.count === 1;
+  }
+
+  private async createExclusiveInTransaction<T>(
+    repositoryId: number,
+    operation: (database: AnalysisJobCreationDatabase) => Promise<T>,
+    database: AnalysisJobCreationDatabase,
+  ): Promise<T> {
+    const lockScope = `analysis-job-repository:${repositoryId}`;
+    const lockId = createHash('sha256')
+      .update(lockScope)
+      .digest()
+      .readBigInt64BE();
+    await database.$executeRaw`SELECT pg_advisory_xact_lock(${lockId})`;
+
+    await this.recoverStaleActiveJobs(repositoryId, database);
+
+    const active = await database.analysisJob.findFirst({
+      where: {
+        repositoryId,
+        status: {
+          in: [AnalysisJobStatus.QUEUED, AnalysisJobStatus.RUNNING],
+        },
+      },
+      select: { id: true },
+    });
+    if (active) {
+      throw new ActiveAnalysisJobExistsError(repositoryId);
+    }
+
+    return operation(database);
+  }
+
+  private async recoverStaleActiveJobs(
+    repositoryId: number,
+    database: AnalysisJobCreationDatabase,
+  ): Promise<void> {
+    const completedAt = new Date();
+    const staleCutoff = new Date(
+      completedAt.getTime() - ANALYSIS_JOB_STALE_TIMEOUT_MS,
+    );
+    const staleLease = {
+      OR: [
+        { leaseExpiresAt: { lte: completedAt } },
+        { leaseExpiresAt: null, updatedAt: { lte: staleCutoff } },
+      ],
+    } satisfies Prisma.AnalysisJobWhereInput;
+
+    await database.analysisJob.updateMany({
+      where: {
+        repositoryId,
+        reservedTokens: null,
+        tokensSettledAt: null,
+        OR: [
+          {
+            status: AnalysisJobStatus.QUEUED,
+            idempotencyKey: { startsWith: 'sync:' },
+            createdAt: { lte: staleCutoff },
+            startedAt: null,
+            messagePublishedAt: null,
+            nextPublishAt: null,
+            attemptCount: 0,
+          },
+          {
+            status: AnalysisJobStatus.RUNNING,
+            ...staleLease,
+          },
+        ],
+      },
+      data: {
+        status: AnalysisJobStatus.FAILED,
+        stage: null,
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 0,
+        tokensSettledAt: completedAt,
+        leaseToken: null,
+        leaseExpiresAt: null,
+        heartbeatAt: null,
+        completedAt,
+        lastErrorCode: 'ANALYSIS_FAILED',
+        lastErrorMessage: STALE_JOB_ERROR_MESSAGES.ANALYSIS_FAILED,
+        errorRetryable: true,
+      },
+    });
+
+    await database.analysisJob.updateMany({
+      where: {
+        repositoryId,
+        status: AnalysisJobStatus.RUNNING,
+        reservedTokens: { not: null },
+        tokensSettledAt: null,
+        ...staleLease,
+      },
+      data: {
+        status: AnalysisJobStatus.FAILED,
+        stage: null,
+        tokensSettledAt: null,
+        leaseToken: null,
+        leaseExpiresAt: null,
+        heartbeatAt: null,
+        completedAt,
+        lastErrorCode: 'PROVIDER_RECONCILIATION_REQUIRED',
+        lastErrorMessage:
+          STALE_JOB_ERROR_MESSAGES.PROVIDER_RECONCILIATION_REQUIRED,
+        errorRetryable: false,
+      },
+    });
   }
 }

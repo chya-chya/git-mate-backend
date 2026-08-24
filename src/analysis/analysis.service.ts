@@ -30,6 +30,10 @@ export interface AnalysisJobExecutionContext {
   leaseToken: string;
 }
 
+export type AnalysisCompletionAction = (
+  tx: Prisma.TransactionClient,
+) => Promise<unknown>;
+
 interface ResolvedAnalysisJobExecutionContext
   extends AnalysisJobExecutionContext, AnalysisExecutionVersion {
   reservedTokens: number | null;
@@ -124,6 +128,7 @@ export class AnalysisJobRunnerService {
     userId: number,
     repositoryId: number,
     data: CollectedDataDto,
+    completionAction?: AnalysisCompletionAction,
   ) {
     const leaseToken = randomUUID();
     const startedAt = new Date();
@@ -142,10 +147,14 @@ export class AnalysisJobRunnerService {
         startedAt,
       },
     });
-    const result = await this.runAnalysisJob(data, {
-      jobId: job.id,
-      leaseToken,
-    });
+    const result = await this.runAnalysisJob(
+      data,
+      {
+        jobId: job.id,
+        leaseToken,
+      },
+      completionAction,
+    );
     if (result.outcome === AnalysisJobExecutionOutcome.SUCCEEDED) {
       return result.metrics;
     }
@@ -161,6 +170,7 @@ export class AnalysisJobRunnerService {
   async runAnalysisJob(
     data: CollectedDataDto,
     jobContext: AnalysisJobExecutionContext,
+    completionAction?: AnalysisCompletionAction,
   ): Promise<AnalysisJobExecutionResult> {
     const job = await this.analysisJobService.getRunningJobContext(
       jobContext.jobId,
@@ -196,6 +206,7 @@ export class AnalysisJobRunnerService {
       job.repositoryId,
       data,
       resolvedContext,
+      completionAction,
     );
   }
 
@@ -204,6 +215,7 @@ export class AnalysisJobRunnerService {
     repositoryId: number,
     data: CollectedDataDto,
     jobContext: ResolvedAnalysisJobExecutionContext,
+    completionAction?: AnalysisCompletionAction,
   ): Promise<AnalysisJobExecutionResult> {
     this.logger.log(
       `Starting analysis for User ${userId}, Repo ${repositoryId}...`,
@@ -231,6 +243,8 @@ export class AnalysisJobRunnerService {
           AnalysisJobFailureCode.NO_ANALYZABLE_DATA,
           ZERO_TOKEN_USAGE,
           jobContext.reservedTokens ?? 0,
+          [],
+          { completionAction },
         );
         return { outcome: AnalysisJobExecutionOutcome.NO_ANALYZABLE_DATA };
       }
@@ -443,6 +457,8 @@ export class AnalysisJobRunnerService {
             tx,
           );
 
+          await completionAction?.(tx);
+
           this.logger.log(
             `Settled ${usage.totalTokens} tokens for User ${userId}.`,
           );
@@ -525,6 +541,7 @@ export class AnalysisJobRunnerService {
     options: {
       tokensSettled?: boolean;
       additionalDebitTokens?: number;
+      completionAction?: AnalysisCompletionAction;
     } = {},
   ): Promise<void> {
     const completedAt = new Date();
@@ -584,6 +601,7 @@ export class AnalysisJobRunnerService {
           },
           tx,
         );
+        await options.completionAction?.(tx);
         return;
       }
       await this.analysisJobService.transition(
@@ -602,6 +620,7 @@ export class AnalysisJobRunnerService {
         },
         tx,
       );
+      await options.completionAction?.(tx);
     });
   }
 
@@ -844,8 +863,18 @@ export class AnalysisService {
     private analysisJobRunner: AnalysisJobRunnerService,
   ) {}
 
-  runAnalysis(userId: number, repositoryId: number, data: CollectedDataDto) {
-    return this.analysisJobRunner.runAnalysis(userId, repositoryId, data);
+  runAnalysis(
+    userId: number,
+    repositoryId: number,
+    data: CollectedDataDto,
+    completionAction?: AnalysisCompletionAction,
+  ) {
+    return this.analysisJobRunner.runAnalysis(
+      userId,
+      repositoryId,
+      data,
+      completionAction,
+    );
   }
 
   /**

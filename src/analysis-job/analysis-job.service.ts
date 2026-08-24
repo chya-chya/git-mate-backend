@@ -205,13 +205,18 @@ export class AnalysisJobService {
       ...CURRENT_ANALYSIS_EXECUTION_VERSION,
     };
 
-    return this.repository.create({
-      ...versionedInput,
-      requestHash: this.createRequestHash(versionedInput),
-      status: AnalysisJobStatus.QUEUED,
-      stage: AnalysisJobStage.WAITING,
-      progress: 0,
-    });
+    return this.repository.createExclusive(input.repositoryId, (database) =>
+      this.repository.create(
+        {
+          ...versionedInput,
+          requestHash: this.createRequestHash(versionedInput),
+          status: AnalysisJobStatus.QUEUED,
+          stage: AnalysisJobStage.WAITING,
+          progress: 0,
+        },
+        database,
+      ),
+    );
   }
 
   findById(jobId: string): Promise<AnalysisJob | null> {

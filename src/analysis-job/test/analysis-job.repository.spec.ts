@@ -1,6 +1,8 @@
-import { AnalysisJobStatus } from '@prisma/client';
+import { AnalysisJobStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
+  ANALYSIS_JOB_STALE_TIMEOUT_MS,
+  ActiveAnalysisJobExistsError,
   AnalysisJobRepository,
   TransitionAnalysisJobRecordInput,
 } from '../analysis-job.repository';
@@ -18,6 +20,127 @@ describe('AnalysisJobRepository', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+  });
+
+  it('checks for an active Job under the repository advisory lock', async () => {
+    const transaction = {
+      $executeRaw: jest.fn().mockResolvedValue(0),
+      analysisJob: {
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+        findFirst: jest.fn().mockResolvedValue(null),
+      },
+    };
+    const operation = jest.fn().mockResolvedValue('created');
+
+    await expect(
+      repository.createExclusive(9, operation, transaction as never),
+    ).resolves.toBe('created');
+
+    expect(transaction.$executeRaw).toHaveBeenCalledTimes(1);
+    expect(transaction.analysisJob.updateMany).toHaveBeenCalledTimes(2);
+    expect(transaction.analysisJob.findFirst).toHaveBeenCalledWith({
+      where: {
+        repositoryId: 9,
+        status: {
+          in: [AnalysisJobStatus.QUEUED, AnalysisJobStatus.RUNNING],
+        },
+      },
+      select: { id: true },
+    });
+    expect(operation).toHaveBeenCalledWith(transaction);
+  });
+
+  it('rejects creation when the locked repository already has an active Job', async () => {
+    const transaction = {
+      $executeRaw: jest.fn().mockResolvedValue(0),
+      analysisJob: {
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+        findFirst: jest.fn().mockResolvedValue({ id: 'active-job' }),
+      },
+    };
+    const operation = jest.fn();
+
+    await expect(
+      repository.createExclusive(9, operation, transaction as never),
+    ).rejects.toBeInstanceOf(ActiveAnalysisJobExistsError);
+    expect(operation).not.toHaveBeenCalled();
+  });
+
+  it('terminalizes stale unreserved and reserved Jobs before creating', async () => {
+    jest.useFakeTimers();
+    const now = new Date('2026-08-23T09:00:00.000Z');
+    jest.setSystemTime(now);
+    const staleCutoff = new Date(now.getTime() - ANALYSIS_JOB_STALE_TIMEOUT_MS);
+    const transaction = {
+      $executeRaw: jest.fn().mockResolvedValue(0),
+      analysisJob: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findFirst: jest.fn().mockResolvedValue(null),
+      },
+    };
+
+    try {
+      await repository.createExclusive(
+        9,
+        jest.fn().mockResolvedValue('created'),
+        transaction as never,
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+
+    const recoveryCalls = transaction.analysisJob.updateMany.mock
+      .calls as Array<[Prisma.AnalysisJobUpdateManyArgs]>;
+    expect(recoveryCalls[0][0]).toMatchObject({
+      where: {
+        repositoryId: 9,
+        reservedTokens: null,
+        tokensSettledAt: null,
+        OR: [
+          {
+            status: AnalysisJobStatus.QUEUED,
+            idempotencyKey: { startsWith: 'sync:' },
+            createdAt: { lte: staleCutoff },
+            startedAt: null,
+            messagePublishedAt: null,
+            nextPublishAt: null,
+            attemptCount: 0,
+          },
+          {
+            status: AnalysisJobStatus.RUNNING,
+            OR: [
+              { leaseExpiresAt: { lte: now } },
+              { leaseExpiresAt: null, updatedAt: { lte: staleCutoff } },
+            ],
+          },
+        ],
+      },
+      data: {
+        status: AnalysisJobStatus.FAILED,
+        totalTokens: 0,
+        tokensSettledAt: now,
+        lastErrorCode: 'ANALYSIS_FAILED',
+        leaseToken: null,
+      },
+    });
+    expect(recoveryCalls[1][0]).toMatchObject({
+      where: {
+        repositoryId: 9,
+        status: AnalysisJobStatus.RUNNING,
+        reservedTokens: { not: null },
+        tokensSettledAt: null,
+        OR: [
+          { leaseExpiresAt: { lte: now } },
+          { leaseExpiresAt: null, updatedAt: { lte: staleCutoff } },
+        ],
+      },
+      data: {
+        status: AnalysisJobStatus.FAILED,
+        tokensSettledAt: null,
+        lastErrorCode: 'PROVIDER_RECONCILIATION_REQUIRED',
+        leaseToken: null,
+      },
+    });
   });
 
   it('guards success with the expected status, lease, and linked report', async () => {
