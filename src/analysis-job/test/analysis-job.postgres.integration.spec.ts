@@ -440,7 +440,7 @@ describeDatabase('AnalysisJob PostgreSQL invariants', () => {
         userId,
         repositoryId: staleQueuedRepository.id,
         idempotencyKey: 'sync:stale-queued',
-        requestHash: 'stale-queued',
+        requestHash: 'a'.repeat(64),
         createdAt: new Date('2026-08-01T00:00:00.000Z'),
       },
     });
@@ -472,7 +472,7 @@ describeDatabase('AnalysisJob PostgreSQL invariants', () => {
         userId,
         repositoryId: staleRunningRepository.id,
         idempotencyKey: 'sync:stale-running',
-        requestHash: 'stale-running',
+        requestHash: 'b'.repeat(64),
         status: AnalysisJobStatus.RUNNING,
         stage: 'ANALYZING',
         reservedTokens: 20,
