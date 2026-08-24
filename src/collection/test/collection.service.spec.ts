@@ -25,6 +25,11 @@ describe('CollectionService', () => {
       upsert: jest.fn(),
     },
   };
+  const transaction = {
+    repository: {
+      updateMany: jest.fn(),
+    },
+  };
   const analysisService = {
     runAnalysis: jest.fn(),
     estimateTokens: jest.fn(),
@@ -35,6 +40,17 @@ describe('CollectionService', () => {
   };
   const githubAppService = {
     getInstallations: jest.fn(),
+  };
+
+  const mockSuccessfulAnalysis = () => {
+    analysisService.runAnalysis.mockImplementation(
+      async (
+        _userId: number,
+        _repositoryId: number,
+        _data: unknown,
+        completionAction?: (tx: unknown) => Promise<unknown>,
+      ) => completionAction?.(transaction),
+    );
   };
 
   beforeEach(async () => {
@@ -80,8 +96,8 @@ describe('CollectionService', () => {
         operation: (octokit: Octokit) => Promise<unknown>,
       ) => operation({} as Octokit),
     );
-    prisma.repository.updateMany.mockResolvedValue({ count: 1 });
-    analysisService.runAnalysis.mockResolvedValue({});
+    transaction.repository.updateMany.mockResolvedValue({ count: 1 });
+    mockSuccessfulAnalysis();
 
     await service.syncRepository('11', 7);
 
@@ -185,8 +201,8 @@ describe('CollectionService', () => {
       },
     );
     githubProvider.fetchPullRequests.mockResolvedValue(githubData);
-    prisma.repository.updateMany.mockResolvedValue({ count: 1 });
-    analysisService.runAnalysis.mockResolvedValue({});
+    transaction.repository.updateMany.mockResolvedValue({ count: 1 });
+    mockSuccessfulAnalysis();
 
     await expect(service.syncRepository('11', 7)).resolves.toEqual(
       expectedResponse,
@@ -195,17 +211,21 @@ describe('CollectionService', () => {
       7,
       1,
       expectedResponse,
+      expect.any(Function),
     );
-    expect(prisma.repository.updateMany).toHaveBeenCalledWith({
+    expect(transaction.repository.updateMany).toHaveBeenCalledWith({
       where: {
         githubRepoId: '11',
         OR: [{ lastSyncTime: null }, { lastSyncTime: { lt: syncStartedAt } }],
       },
       data: { lastSyncTime: syncStartedAt },
     });
+    expect(prisma.repository.updateMany).not.toHaveBeenCalled();
     expect(
       analysisService.runAnalysis.mock.invocationCallOrder[0],
-    ).toBeLessThan(prisma.repository.updateMany.mock.invocationCallOrder[0]);
+    ).toBeLessThan(
+      transaction.repository.updateMany.mock.invocationCallOrder[0],
+    );
   });
 
   it('returns a structured conflict without advancing the sync cursor', async () => {
@@ -241,6 +261,7 @@ describe('CollectionService', () => {
       code: 'ACTIVE_JOB_EXISTS',
       message: 'An active analysis job already exists for this repository.',
     });
+    expect(transaction.repository.updateMany).not.toHaveBeenCalled();
     expect(prisma.repository.updateMany).not.toHaveBeenCalled();
   });
 
@@ -265,12 +286,12 @@ describe('CollectionService', () => {
     githubProvider.fetchPullRequests.mockResolvedValue({
       repository: { pullRequests: { nodes: [] } },
     });
-    analysisService.runAnalysis.mockResolvedValue({});
-    prisma.repository.updateMany.mockResolvedValue({ count: 0 });
+    mockSuccessfulAnalysis();
+    transaction.repository.updateMany.mockResolvedValue({ count: 0 });
 
     await service.syncRepository('11', 7);
 
-    expect(prisma.repository.updateMany).toHaveBeenCalledWith({
+    expect(transaction.repository.updateMany).toHaveBeenCalledWith({
       where: {
         githubRepoId: '11',
         OR: [

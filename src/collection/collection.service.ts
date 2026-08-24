@@ -98,6 +98,17 @@ export class CollectionService implements ICollectionService {
         userId,
         repository.id,
         collectedData,
+        (tx) =>
+          tx.repository.updateMany({
+            where: {
+              githubRepoId,
+              OR: [
+                { lastSyncTime: null },
+                { lastSyncTime: { lt: syncStartedAt } },
+              ],
+            },
+            data: { lastSyncTime: syncStartedAt },
+          }),
       );
     } catch (error) {
       if (error instanceof ActiveAnalysisJobExistsError) {
@@ -108,14 +119,6 @@ export class CollectionService implements ICollectionService {
       }
       throw error;
     }
-
-    await this.prisma.repository.updateMany({
-      where: {
-        githubRepoId,
-        OR: [{ lastSyncTime: null }, { lastSyncTime: { lt: syncStartedAt } }],
-      },
-      data: { lastSyncTime: syncStartedAt },
-    });
 
     return collectedData;
   }

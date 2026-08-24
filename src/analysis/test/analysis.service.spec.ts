@@ -182,6 +182,42 @@ describe('AnalysisJobRunnerService', () => {
     ]);
   });
 
+  it('commits the synchronous completion action with the analysis result', async () => {
+    const { analysisJobService, service, transaction } = createFixture();
+    const completionAction = jest.fn().mockResolvedValue({ count: 1 });
+
+    await service.runAnalysis(7, 9, {} as never, completionAction);
+
+    expect(completionAction).toHaveBeenCalledWith(transaction);
+    const transitionCalls = analysisJobService.transition.mock
+      .calls as unknown as Array<[{ toStatus: string }]>;
+    expect(transitionCalls[1][0]).toMatchObject({ toStatus: 'SUCCEEDED' });
+    expect(
+      analysisJobService.transition.mock.invocationCallOrder[1],
+    ).toBeLessThan(completionAction.mock.invocationCallOrder[0]);
+  });
+
+  it('does not report synchronous success when its completion action fails', async () => {
+    const cursorError = new Error('sync cursor update failed');
+    const { analysisJobService, service, transaction } = createFixture({
+      reservedTokens: 20,
+    });
+    const completionAction = jest.fn().mockRejectedValue(cursorError);
+
+    await expect(
+      service.runAnalysis(7, 9, {} as never, completionAction),
+    ).rejects.toBe(cursorError);
+
+    expect(completionAction).toHaveBeenCalledWith(transaction);
+    const transitionCalls = analysisJobService.transition.mock
+      .calls as unknown as Array<[{ toStatus: string; data?: object }]>;
+    expect(transitionCalls.map(([input]) => input.toStatus)).toEqual([
+      'RUNNING',
+      'SUCCEEDED',
+      'FAILED',
+    ]);
+  });
+
   it('reserves the worker budget before the LLM call and refunds the unused amount', async () => {
     const {
       analysisJobService,
@@ -440,12 +476,14 @@ describe('AnalysisJobRunnerService', () => {
       availableTokens: 0,
       tokenUpdateCount: 0,
     });
+    const completionAction = jest.fn();
 
-    await expect(service.runAnalysis(7, 9, {} as never)).rejects.toBeInstanceOf(
-      InsufficientAnalysisTokensError,
-    );
+    await expect(
+      service.runAnalysis(7, 9, {} as never, completionAction),
+    ).rejects.toBeInstanceOf(InsufficientAnalysisTokensError);
 
     expect(llmProvider.analyze).not.toHaveBeenCalled();
+    expect(completionAction).not.toHaveBeenCalled();
     const transitionCalls = analysisJobService.transition.mock
       .calls as unknown as Array<[{ toStatus: string; data?: object }]>;
     expect(transitionCalls.map(([input]) => input.toStatus)).toEqual([
@@ -477,6 +515,15 @@ describe('AnalysisJobRunnerService', () => {
     expect(failureInput.toStatus).toBe('FAILED');
     expect(failureInput.data.errorCode).toBe('NO_ANALYZABLE_DATA');
     expect(failureInput.data.totalTokens).toBe(0);
+  });
+
+  it('commits the completion action for a synchronous empty analysis', async () => {
+    const { service, transaction } = createFixture({ pullRequests: [] });
+    const completionAction = jest.fn().mockResolvedValue({ count: 1 });
+
+    await service.runAnalysis(7, 9, {} as never, completionAction);
+
+    expect(completionAction).toHaveBeenCalledWith(transaction);
   });
 
   it('settles known usage and prevents retry when billed JSON parsing fails', async () => {
