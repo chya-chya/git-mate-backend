@@ -4,6 +4,7 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import { AnalysisJobStatus, PrismaClient } from '@prisma/client';
 import { Pool } from 'pg';
 import { HttpException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { StatService } from '../../analysis/stat.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AnalysisJobApiRepository } from '../analysis-job-api.repository';
@@ -18,6 +19,17 @@ import {
   AnalysisJobService,
   StaleAnalysisJobTransitionError,
 } from '../analysis-job.service';
+import {
+  AnalysisJobPublishOutcome,
+  AnalysisJobPublisherService,
+} from '../analysis-job-publisher.service';
+import {
+  AnalysisJobPublishRecord,
+  AnalysisJobPublishRepository,
+} from '../analysis-job-publish.repository';
+import { AnalysisJobReconcilerService } from '../analysis-job-reconciler.service';
+import { AnalysisJobQueueConfig } from '../queue/analysis-job-queue.config';
+import { AnalysisJobQueue } from '../queue/analysis-job.queue';
 
 const runDatabaseIntegrationTests =
   process.env.RUN_DATABASE_INTEGRATION_TESTS === 'true';
@@ -29,8 +41,14 @@ describeDatabase('AnalysisJob PostgreSQL invariants', () => {
   let prisma: PrismaClient;
   let analysisJobService: AnalysisJobService;
   let analysisJobApiService: AnalysisJobApiService;
+  let analysisJobPublishRepository: AnalysisJobPublishRepository;
   let userId: number;
   let repositoryId: number;
+  const publisher = {
+    publishAcceptedJob: jest
+      .fn()
+      .mockResolvedValue(AnalysisJobPublishOutcome.SKIPPED),
+  } as unknown as AnalysisJobPublisherService;
 
   const settlement = {
     completedAt: new Date('2026-08-04T00:00:00.000Z'),
@@ -104,10 +122,14 @@ describeDatabase('AnalysisJob PostgreSQL invariants', () => {
     await prisma.$connect();
     const analysisJobRepository = new AnalysisJobRepository(prisma);
     analysisJobService = new AnalysisJobService(analysisJobRepository);
+    analysisJobPublishRepository = new AnalysisJobPublishRepository(
+      prisma as unknown as PrismaService,
+    );
     analysisJobApiService = new AnalysisJobApiService(
       new AnalysisJobApiRepository(prisma as unknown as PrismaService),
       new AnalysisJobResponseMapper(),
       analysisJobRepository,
+      publisher,
     );
   });
 
@@ -504,6 +526,7 @@ describeDatabase('AnalysisJob PostgreSQL invariants', () => {
       new AnalysisJobApiRepository(prisma as unknown as PrismaService),
       new AnalysisJobResponseMapper(),
       new AnalysisJobRepository(prisma as unknown as PrismaService),
+      publisher,
     );
     const apiInstances = [analysisJobApiService, secondApiService];
     const rateLimitedUser = await prisma.user.create({
@@ -557,6 +580,141 @@ describeDatabase('AnalysisJob PostgreSQL invariants', () => {
     ).resolves.toBe(5);
   });
 
+  it('selects only due unpublished or stale-published Jobs', async () => {
+    const now = new Date('2026-08-25T05:00:00.000Z');
+    const dueUnpublished = await createPublishJob('due-unpublished');
+    const future = await createPublishJob('future', {
+      nextPublishAt: new Date('2026-08-25T05:01:00.000Z'),
+    });
+    const recentlyPublished = await createPublishJob('recent-published', {
+      messagePublishedAt: new Date('2026-08-25T04:59:30.000Z'),
+    });
+    const stalePublished = await createPublishJob('stale-published', {
+      messagePublishedAt: new Date('2026-08-25T04:58:00.000Z'),
+    });
+    const synchronous = await createPublishJob('synchronous', {
+      idempotencyKey: 'sync:integration-publish-query',
+    });
+
+    const due = await analysisJobPublishRepository.findDue(now, 60, 5, 100);
+    const dueIds = new Set(due.map((job) => job.id));
+
+    expect(dueIds).toContain(dueUnpublished.id);
+    expect(dueIds).toContain(stalePublished.id);
+    expect(dueIds).not.toContain(future.id);
+    expect(dueIds).not.toContain(recentlyPublished.id);
+    expect(dueIds).not.toContain(synchronous.id);
+  });
+
+  it('uses publish snapshot CAS so a late failure cannot overwrite success', async () => {
+    const job = await createPublishJob('publish-cas');
+    const claimedNextPublishAt = new Date('2026-08-25T06:01:00.000Z');
+    await expect(
+      analysisJobPublishRepository.claimAttempt({
+        job,
+        claimedNextPublishAt,
+        deliveryUncertain: false,
+      }),
+    ).resolves.toBe(true);
+    await expect(
+      analysisJobPublishRepository.markPublished(
+        { job, attempt: 1, claimedNextPublishAt },
+        new Date('2026-08-25T06:00:00.000Z'),
+      ),
+    ).resolves.toBe(true);
+    await expect(
+      analysisJobPublishRepository.recordFailure({
+        job,
+        attempt: 1,
+        claimedNextPublishAt,
+        nextPublishAt: new Date('2026-08-25T06:02:00.000Z'),
+        deliveryUncertain: false,
+        terminate: false,
+        completedAt: new Date('2026-08-25T06:00:00.000Z'),
+      }),
+    ).resolves.toBe(false);
+
+    await expect(
+      prisma.analysisJob.findUniqueOrThrow({ where: { id: job.id } }),
+    ).resolves.toMatchObject({
+      messagePublishedAt: new Date('2026-08-25T06:00:00.000Z'),
+      nextPublishAt: null,
+      lastErrorCode: null,
+    });
+  });
+
+  it('allows only one concurrent reconciler to send a due snapshot', async () => {
+    await prisma.analysisJob.updateMany({
+      where: { status: AnalysisJobStatus.QUEUED },
+      data: { nextPublishAt: new Date('2100-01-01T00:00:00.000Z') },
+    });
+    const job = await createPublishJob('concurrent-reconciler');
+    const publish = jest.fn().mockResolvedValue({ messageId: 'message-1' });
+    const queue: AnalysisJobQueue = { publish };
+    const config = createPublishConfig();
+    const publisherService = new AnalysisJobPublisherService(
+      analysisJobPublishRepository,
+      queue,
+      config,
+    );
+    const first = new AnalysisJobReconcilerService(
+      analysisJobPublishRepository,
+      publisherService,
+      config,
+    );
+    const second = new AnalysisJobReconcilerService(
+      analysisJobPublishRepository,
+      publisherService,
+      config,
+    );
+    const now = new Date('2026-08-25T07:00:00.000Z');
+
+    await Promise.all([first.runOnce(now), second.runOnce(now)]);
+
+    expect(publish).toHaveBeenCalledTimes(1);
+    await expect(
+      prisma.analysisJob.findUniqueOrThrow({ where: { id: job.id } }),
+    ).resolves.toMatchObject({ publishAttempts: 1 });
+  });
+
+  it('settles all failure invariants after the final confirmed publish failure', async () => {
+    const job = await createPublishJob('publish-limit', {
+      publishAttempts: 4,
+      lastErrorCode: 'PUBLISH_ATTEMPT_FAILED',
+    });
+    const queue: AnalysisJobQueue = {
+      publish: jest.fn().mockRejectedValue(new Error('fault injection')),
+    };
+    const publisherService = new AnalysisJobPublisherService(
+      analysisJobPublishRepository,
+      queue,
+      createPublishConfig(),
+    );
+
+    await expect(
+      publisherService.publish(job, {
+        allowRepublish: false,
+        now: new Date('2026-08-25T08:00:00.000Z'),
+        traceId: 'postgres-integration',
+        random: 0,
+      }),
+    ).resolves.toBe(AnalysisJobPublishOutcome.FAILED);
+    await expect(
+      prisma.analysisJob.findUniqueOrThrow({ where: { id: job.id } }),
+    ).resolves.toMatchObject({
+      status: AnalysisJobStatus.FAILED,
+      stage: null,
+      lastErrorCode: 'PUBLISH_FAILED',
+      lastErrorMessage: 'The analysis job could not be published.',
+      errorRetryable: true,
+      promptTokens: 0,
+      completionTokens: 0,
+      totalTokens: 0,
+      tokensSettledAt: new Date('2026-08-25T08:00:00.000Z'),
+      completedAt: new Date('2026-08-25T08:00:00.000Z'),
+    });
+  });
+
   it('keeps lastSyncTime monotonic when an older sync finishes last', async () => {
     const olderSyncStartedAt = new Date('2026-08-21T11:00:00.000Z');
     const newerSyncStartedAt = new Date('2026-08-21T11:05:00.000Z');
@@ -608,6 +766,64 @@ describeDatabase('AnalysisJob PostgreSQL invariants', () => {
       },
     });
     return { id: job.id, leaseToken };
+  }
+
+  async function createPublishJob(
+    suffix: string,
+    overrides: {
+      idempotencyKey?: string;
+      publishAttempts?: number;
+      messagePublishedAt?: Date;
+      nextPublishAt?: Date;
+      lastErrorCode?: string;
+    } = {},
+  ): Promise<AnalysisJobPublishRecord> {
+    const repository = await prisma.repository.create({
+      data: {
+        githubRepoId: `integration-publish-${suffix}`,
+        fullName: `owner/publish-${suffix}`,
+        ownerId: userId,
+      },
+    });
+    return prisma.analysisJob.create({
+      data: {
+        userId,
+        repositoryId: repository.id,
+        idempotencyKey:
+          overrides.idempotencyKey ?? `integration-publish-${suffix}`,
+        requestHash: 'c'.repeat(64),
+        publishAttempts: overrides.publishAttempts,
+        messagePublishedAt: overrides.messagePublishedAt,
+        nextPublishAt: overrides.nextPublishAt,
+        lastErrorCode: overrides.lastErrorCode,
+      },
+      select: {
+        id: true,
+        status: true,
+        userId: true,
+        repositoryId: true,
+        idempotencyKey: true,
+        reservedTokens: true,
+        publishAttempts: true,
+        messagePublishedAt: true,
+        nextPublishAt: true,
+        lastErrorCode: true,
+        createdAt: true,
+      },
+    });
+  }
+
+  function createPublishConfig(): AnalysisJobQueueConfig {
+    return new AnalysisJobQueueConfig(
+      new ConfigService({
+        AWS_REGION: 'us-east-1',
+        ANALYSIS_JOB_QUEUE_URL:
+          'http://127.0.0.1:4566/000000000000/analysis-jobs.fifo',
+        ANALYSIS_JOB_PUBLISH_MAX_ATTEMPTS: '5',
+        ANALYSIS_JOB_REPUBLISH_AFTER_SECONDS: '60',
+        ANALYSIS_JOB_RECONCILE_BATCH_SIZE: '100',
+      }),
+    );
   }
 
   function createMetrics(score: number) {

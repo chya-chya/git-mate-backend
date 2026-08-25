@@ -10,14 +10,14 @@
 - **Framework:** NestJS
 - **Language:** TypeScript
 - **Database & ORM:** PostgreSQL, Prisma (`@prisma/client`)
-- **Queue/Cache:** BullMQ (Redis)
+- **Queue:** Amazon SQS FIFO (로컬 환경은 LocalStack)
 - **API Docs:** Swagger (`@nestjs/swagger`)
 - **Testing & Tools:** Jest, ESLint, Prettier
 
 ## 3. Architecture
 - **레이어드 아키텍처:** 표준 NestJS 모듈형 패턴 (Module -> Controller -> Service).
 - **데이터 흐름:** Client -> Controller (DTO 검증 및 Swagger 명세) -> Service (비즈니스 로직 및 외부 API/GitHub 데이터 처리) -> Prisma DB 접근.
-- **비동기 처리:** 대규모 데이터(PR 리뷰 등) 스크래핑/분석은 BullMQ를 이용해 비동기 작업 큐로 분리하여 처리.
+- **비동기 처리:** 대규모 데이터(PR 리뷰 등) 스크래핑/분석은 `AnalysisJob` outbox와 SQS FIFO를 이용해 비동기 작업 큐로 분리하여 처리.
 
 ## 4. Coding Conventions
 - **Naming Rule:** 변수/함수는 camelCase, 클래스와 인터페이스/DTO는 PascalCase, DB 컬럼은 snake_case (또는 Prisma 매핑 준수)를 사용합니다.
@@ -42,7 +42,7 @@
 
 ## 9. Safe Change Rules (안전 변경 규칙)
 - **DB 스키마 변경:** `prisma/schema.prisma` 변경이나 DB 데이터 직접 수정 시 **반드시 사용자에게 수정 전/후 예측 결과를 보고하고 승인을 받은 후** 진행해야 합니다.
-- **코어 설정 변경 제한:** 인증/인가(JWT, Passport 로직), 외부 API 인증 구조, Redis/BullMQ 연결 설정 관련 코드는 사전 협의 없이 함부로 수정하지 마세요.
+- **코어 설정 변경 제한:** 인증/인가(JWT, Passport 로직), 외부 API 인증 구조, SQS 연결 설정 관련 코드는 사전 협의 없이 함부로 수정하지 마세요.
 
 ## 10. Specific Commands
 - 개발 서버 실행: `npm run dev` (또는 `npm run start:dev`)

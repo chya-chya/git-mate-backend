@@ -55,7 +55,8 @@
   - **Main**: `main.ts`에서 Swagger(API 문서화) 및 ValidationPipe(유효성 검사) 등을 전역 설정합니다.
   - **AppModule**: 모든 모듈을 통합하는 루트 모듈입니다.
 - **Async Task Queue**:
-  - `BullMQ`를 사용하여 대량의 워크플로우(데이터 수집 및 LLM 분석)를 비동기적으로 처리합니다.
+  - `AnalysisJob`을 durable outbox로 사용하고 SQS FIFO에 최소 메시지를 발행합니다.
+  - API 발행 실패는 독립 실행형 reconciler가 재발행하며, FIFO 중복 제거 ID와 DB 조건부 갱신으로 중복을 흡수합니다.
 
 ## 4. 디렉토리 구조 요약
 
