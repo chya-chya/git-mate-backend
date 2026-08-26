@@ -26,6 +26,7 @@ import {
   ActiveAnalysisJobExistsError,
   AnalysisJobRepository,
 } from './analysis-job.repository';
+import { AnalysisJobPublisherService } from './analysis-job-publisher.service';
 
 type JobRequest =
   | { type: 'CREATE'; githubRepoId: string }
@@ -59,6 +60,7 @@ export class AnalysisJobApiService {
     private readonly repository: AnalysisJobApiRepository,
     private readonly responseMapper: AnalysisJobResponseMapper,
     private readonly creationRepository: AnalysisJobRepository,
+    private readonly publisher: AnalysisJobPublisherService,
   ) {}
 
   async create(
@@ -68,6 +70,7 @@ export class AnalysisJobApiService {
   ): Promise<AnalysisJobAcceptanceResponse> {
     const request: JobRequest = { type: 'CREATE', githubRepoId };
     const accepted = await this.acceptJob(userId, idempotencyKey, request);
+    await this.publisher.publishAcceptedJob(accepted.record);
     return {
       job: this.responseMapper.toDto(accepted.record),
       rateLimit: accepted.rateLimit,
@@ -100,6 +103,7 @@ export class AnalysisJobApiService {
       request,
       sourceJob,
     );
+    await this.publisher.publishAcceptedJob(accepted.record);
     return {
       job: this.responseMapper.toDto(accepted.record),
       rateLimit: accepted.rateLimit,

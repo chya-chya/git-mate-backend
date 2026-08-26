@@ -13,6 +13,10 @@ import {
   ActiveAnalysisJobExistsError,
   AnalysisJobRepository,
 } from '../analysis-job.repository';
+import {
+  AnalysisJobPublishOutcome,
+  AnalysisJobPublisherService,
+} from '../analysis-job-publisher.service';
 
 const FIRST_JOB_ID = '11111111-1111-4111-8111-111111111111';
 const RETRY_JOB_ID = '22222222-2222-4222-8222-222222222222';
@@ -141,16 +145,25 @@ describe('AnalysisJobApiService', () => {
       ) => operation(database),
     ),
   };
+  const publisher = {
+    publishAcceptedJob: jest
+      .fn()
+      .mockResolvedValue(AnalysisJobPublishOutcome.PUBLISHED),
+  };
   const service = new AnalysisJobApiService(
     repository as unknown as AnalysisJobApiRepository,
     new AnalysisJobResponseMapper(),
     creationRepository as unknown as AnalysisJobRepository,
+    publisher as unknown as AnalysisJobPublisherService,
   );
 
   beforeEach(() => {
     storedJob = null;
     jest.clearAllMocks();
     repository.acquireTransactionLock.mockResolvedValue(undefined);
+    publisher.publishAcceptedJob.mockResolvedValue(
+      AnalysisJobPublishOutcome.PUBLISHED,
+    );
     repository.getCreationRateLimitStatus.mockResolvedValue({
       totalHits: 0,
       remaining: 5,
@@ -174,6 +187,7 @@ describe('AnalysisJobApiService', () => {
 
     expect(repeated.job.jobId).toBe(first.job.jobId);
     expect(repository.create).toHaveBeenCalledTimes(1);
+    expect(publisher.publishAcceptedJob).toHaveBeenCalledTimes(2);
     expect(repository.acquireTransactionLock).toHaveBeenNthCalledWith(
       1,
       'analysis-job-idempotency:7:request-1',
@@ -283,6 +297,24 @@ describe('AnalysisJobApiService', () => {
       'ACTIVE_JOB_EXISTS',
     );
     expect(repository.create).not.toHaveBeenCalled();
+    expect(publisher.publishAcceptedJob).not.toHaveBeenCalled();
+  });
+
+  it('keeps the accepted response when queue publication is deferred', async () => {
+    publisher.publishAcceptedJob.mockResolvedValueOnce(
+      AnalysisJobPublishOutcome.DEFERRED,
+    );
+
+    await expect(
+      service.create(7, '123456789', 'request-1'),
+    ).resolves.toMatchObject({
+      job: { jobId: FIRST_JOB_ID, status: AnalysisJobStatus.QUEUED },
+    });
+    expect(repository.create).toHaveBeenCalledTimes(1);
+    expect(publisher.publishAcceptedJob).toHaveBeenCalledTimes(1);
+    expect(repository.transaction.mock.invocationCallOrder[0]).toBeLessThan(
+      publisher.publishAcceptedJob.mock.invocationCallOrder[0],
+    );
   });
 
   it('blocks a sixth Job under the transaction-scoped user limit', async () => {

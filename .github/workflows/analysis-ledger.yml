@@ -9,6 +9,8 @@ on:
       - 'src/analysis-job/**'
       - 'src/prisma/**'
       - 'test/**'
+      - 'docker-compose.yml'
+      - 'scripts/localstack/**'
       - 'package.json'
       - 'package-lock.json'
 
@@ -32,9 +34,27 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      localstack:
+        image: localstack/localstack:4.7.0
+        env:
+          SERVICES: sqs
+          AWS_DEFAULT_REGION: us-east-1
+        ports:
+          - 4566:4566
+        options: >-
+          --health-cmd "curl -f http://localhost:4566/_localstack/health"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     env:
       DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/gitmate_test
       TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/gitmate_test
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      SQS_ENDPOINT: http://127.0.0.1:4566
+      ANALYSIS_JOB_QUEUE_URL: http://127.0.0.1:4566/000000000000/git-mate-analysis-ci.fifo
+      ASYNC_ANALYSIS_ENABLED: 'false'
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -42,6 +62,12 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Create LocalStack FIFO queue
+        run: >-
+          aws --endpoint-url=http://127.0.0.1:4566 sqs create-queue
+          --queue-name git-mate-analysis-ci.fifo
+          --attributes FifoQueue=true,ContentBasedDeduplication=false
+          --region us-east-1
       - run: npx prisma generate
       - run: npm run build
       - run: npm test -- --runInBand
@@ -59,3 +85,6 @@ jobs:
       - run: npm test -- --runInBand src/analysis-job/test/analysis-job.postgres.integration.spec.ts
         env:
           RUN_DATABASE_INTEGRATION_TESTS: 'true'
+      - run: npm test -- --runInBand src/analysis-job/test/sqs-analysis-job.integration.spec.ts
+        env:
+          RUN_SQS_INTEGRATION_TESTS: 'true'

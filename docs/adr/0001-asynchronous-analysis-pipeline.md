@@ -36,7 +36,7 @@
 - 분석 요청은 `AnalysisJob`을 생성하고 `202 Accepted`를 반환한다.
 - 메시지 큐는 **Amazon SQS FIFO**를 사용한다.
 - SQS 메시지 본문에는 `schemaVersion`과 `jobId`만 넣는다.
-- `MessageGroupId`는 `user:{userId}`, `MessageDeduplicationId`는 `jobId`로 한다.
+- `MessageGroupId`는 `{userId}:{repositoryId}`, `MessageDeduplicationId`는 `jobId`로 한다.
 - Job 상태는 `QUEUED`, `RUNNING`, `SUCCEEDED`, `FAILED` 네 종류만 사용한다.
 - 세부 진행 상황은 상태를 늘리지 않고 별도 `stage`와 `progress`로 표현한다.
 - 작업 생성과 토큰 예약은 분리한다. Worker가 수집을 마치고 비용을 계산한 직후,
@@ -101,9 +101,9 @@ API의 SQS 발행이 실패해도 이미 생성된 `QUEUED` Job은 삭제하지 
 
 ## 5. SQS FIFO를 선택하는 이유
 
-`MessageGroupId=user:{userId}`를 사용하면 한 사용자의 분석이 동시에 실행되지 않는다.
-이 직렬화는 사용자 단위 토큰 잔액과 누적 `UserStat` 갱신 경쟁을 줄인다. 서로 다른
-사용자는 서로 다른 그룹이므로 병렬 처리할 수 있다.
+`MessageGroupId={userId}:{repositoryId}`를 사용하면 같은 사용자·저장소의 분석 순서는
+보장하면서, 한 사용자의 서로 다른 저장소 작업은 병렬 처리할 수 있다. 저장소별 활성 Job
+제한 및 Worker의 DB claim과 함께 사용해 순서와 처리량의 균형을 맞춘다.
 
 | 대안           | 장점                                                                      | 단점 및 이번 결정                                                                                                                         |
 | -------------- | ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
@@ -127,7 +127,7 @@ SQS FIFO의 deduplication ID 추적 시간은 5분이다. 이 시간이 지난 �
 }
 ```
 
-- `MessageGroupId`: `user:{userId}`
+- `MessageGroupId`: `{userId}:{repositoryId}`
 - `MessageDeduplicationId`: `jobId`
 - 메시지 속성: `traceId`, `schemaVersion`
 - 메시지에 사용자 토큰, GitHub 토큰, 저장소 원문, 프롬프트를 넣지 않는다.
@@ -624,7 +624,7 @@ Prisma 모델 PR은 다음 내용을 포함해야 한다.
 - lease, 토큰 정산, 발행 복구, 결과 연결에 필요한 DB 정보가 빠지지 않았는가?
 - 최초 비용이 `null`인 `202` 응답과 상태/목록 API가 프론트 요구사항을 만족하는가?
 - Job 행을 outbox로 사용하는 SQS/DB 실패 복구 방식과 운영 임계값이 타당한가?
-- 사용자 단위 `MessageGroupId`의 직렬화가 통계 정합성과 처리량 사이에서 적절한가?
+- 사용자·저장소 단위 `MessageGroupId`의 직렬화가 순서 보장과 처리량 사이에서 적절한가?
 
 ## 18. 참고 자료
 
