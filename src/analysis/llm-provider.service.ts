@@ -70,6 +70,13 @@ export class LlmTokenEstimationError extends Error {
   }
 }
 
+export class LlmProviderConfigurationError extends Error {
+  constructor() {
+    super('The LLM provider is not configured.');
+    this.name = LlmProviderConfigurationError.name;
+  }
+}
+
 type AnalysisMessage = {
   role: 'system' | 'user';
   content: string;
@@ -152,7 +159,7 @@ JSON 이스케이프 규칙을 철저히 준수하세요. 문자열 내에 쌍�
   ): Promise<LlmAnalysisResponse> {
     assertSupportedAnalysisExecutionVersion(version);
     if (!this.openai) {
-      throw new Error('OPENAI_API_KEY not found. LLM Analysis cannot proceed.');
+      throw new LlmProviderConfigurationError();
     }
 
     try {

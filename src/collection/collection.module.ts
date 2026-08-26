@@ -8,6 +8,7 @@ import { AnalysisModule } from '../analysis/analysis.module';
 import { GithubAppModule } from '../github-app/github-app.module';
 
 import { CollectionController } from './collection.controller';
+import { RepositoryCollectionService } from './repository-collection.service';
 
 @Module({
   imports: [
@@ -17,8 +18,8 @@ import { CollectionController } from './collection.controller';
     AnalysisModule,
     GithubAppModule,
   ],
-  providers: [CollectionService, GithubProvider],
+  providers: [CollectionService, GithubProvider, RepositoryCollectionService],
   controllers: [CollectionController],
-  exports: [CollectionService],
+  exports: [CollectionService, RepositoryCollectionService],
 })
 export class CollectionModule {}

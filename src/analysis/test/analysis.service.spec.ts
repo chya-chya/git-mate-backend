@@ -796,6 +796,44 @@ describe('AnalysisJobRunnerService', () => {
     expect(transitionCalls[0][1]).toBe(transaction);
   });
 
+  it('defers an unbilled provider failure to the Worker without settling its reservation', async () => {
+    const providerError = new Error('temporary provider failure');
+    const { analysisJobService, service, transaction } = createFixture({
+      reservedTokens: 20,
+      analyzeError: providerError,
+    });
+
+    await expect(
+      service.runAnalysisJob({} as never, jobContext, undefined, {
+        deferUnbilledProviderErrors: true,
+      }),
+    ).rejects.toBe(providerError);
+
+    expect(transaction.user.update).not.toHaveBeenCalled();
+    expect(analysisJobService.transition).not.toHaveBeenCalled();
+    expect(analysisJobService.recordProviderCharge).not.toHaveBeenCalled();
+  });
+
+  it('notifies the Worker after reservation and before saving', async () => {
+    const { llmProvider, service, transaction } = createFixture();
+    const onTokensReserved = jest.fn().mockResolvedValue(undefined);
+    const onSaving = jest.fn().mockResolvedValue(undefined);
+
+    await service.runAnalysisJob({} as never, jobContext, undefined, {
+      onTokensReserved,
+      onSaving,
+    });
+
+    expect(onTokensReserved).toHaveBeenCalledTimes(1);
+    expect(onSaving).toHaveBeenCalledTimes(1);
+    expect(onTokensReserved.mock.invocationCallOrder[0]).toBeLessThan(
+      llmProvider.analyze.mock.invocationCallOrder[0],
+    );
+    expect(onSaving.mock.invocationCallOrder[0]).toBeLessThan(
+      transaction.analysisReport.create.mock.invocationCallOrder[0],
+    );
+  });
+
   it('does not leave a reservation when OPENAI_API_KEY is missing', async () => {
     const providerError = new Error(
       'OPENAI_API_KEY not found. LLM Analysis cannot proceed.',

@@ -1,4 +1,7 @@
-import { CollectedDataDto } from '../types/github-api.types';
+import {
+  CollectedDataDto,
+  RepositoryQueryResponse,
+} from '../types/github-api.types';
 import { Octokit } from '@octokit/rest';
 
 export interface IGithubProvider {
@@ -8,7 +11,7 @@ export interface IGithubProvider {
     octokit: Octokit,
     since?: Date,
     cursor?: string,
-  ): Promise<unknown>;
+  ): Promise<RepositoryQueryResponse>;
 }
 
 export interface ICollectionService {

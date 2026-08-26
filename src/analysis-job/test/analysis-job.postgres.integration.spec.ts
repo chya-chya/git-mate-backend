@@ -1,11 +1,24 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { PrismaPg } from '@prisma/adapter-pg';
-import { AnalysisJobStatus, PrismaClient } from '@prisma/client';
+import { AnalysisJobStatus, Prisma, PrismaClient } from '@prisma/client';
 import { Pool } from 'pg';
+import type { SQSRecord } from 'aws-lambda';
 import { HttpException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { AnalysisJobRunnerService } from '../../analysis/analysis.service';
+import { LlmProviderService } from '../../analysis/llm-provider.service';
+import { MetricCalculatorService } from '../../analysis/metric-calculator.service';
+import { PreprocessorService } from '../../analysis/preprocessor.service';
+import { RefinerService } from '../../analysis/refiner.service';
 import { StatService } from '../../analysis/stat.service';
+import { AnalysisWorkerErrorClassifier } from '../../analysis-worker/analysis-worker-error-classifier';
+import {
+  AnalysisWorkerRepository,
+  StaleAnalysisWorkerLeaseError,
+} from '../../analysis-worker/analysis-worker.repository';
+import { AnalysisWorkerService } from '../../analysis-worker/analysis-worker.service';
+import { RepositoryCollectionService } from '../../collection/repository-collection.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AnalysisJobApiRepository } from '../analysis-job-api.repository';
 import { AnalysisJobApiService } from '../analysis-job-api.service';
@@ -45,6 +58,7 @@ describeDatabase('AnalysisJob PostgreSQL invariants', () => {
   let analysisJobService: AnalysisJobService;
   let analysisJobApiService: AnalysisJobApiService;
   let analysisJobPublishRepository: AnalysisJobPublishRepository;
+  let analysisWorkerRepository: AnalysisWorkerRepository;
   let userId: number;
   let repositoryId: number;
   const publisher = {
@@ -126,6 +140,9 @@ describeDatabase('AnalysisJob PostgreSQL invariants', () => {
     const analysisJobRepository = new AnalysisJobRepository(prisma);
     analysisJobService = new AnalysisJobService(analysisJobRepository);
     analysisJobPublishRepository = new AnalysisJobPublishRepository(
+      prisma as unknown as PrismaService,
+    );
+    analysisWorkerRepository = new AnalysisWorkerRepository(
       prisma as unknown as PrismaService,
     );
     analysisJobApiService = new AnalysisJobApiService(
@@ -248,17 +265,28 @@ describeDatabase('AnalysisJob PostgreSQL invariants', () => {
     expect(rejected?.reason).toBeInstanceOf(StaleAnalysisJobTransitionError);
   });
 
-  it('rolls back report creation and success CAS together', async () => {
+  it('rolls back report, stat, token, checkpoint, and success CAS together', async () => {
     const job = await createRunningJob('integration-rollback');
     await prisma.analysisJob.update({
       where: { id: job.id },
       data: { estimatedTokens: 5, reservedTokens: 10 },
     });
+    const [userBefore, statBefore, repositoryBefore] = await Promise.all([
+      prisma.user.findUniqueOrThrow({ where: { id: userId } }),
+      prisma.userStat.findUniqueOrThrow({ where: { userId } }),
+      prisma.repository.findUniqueOrThrow({ where: { id: repositoryId } }),
+    ]);
+    const checkpoint = new Date('2026-08-04T00:05:00.000Z');
 
     await expect(
       prisma.$transaction(async (tx) => {
         const report = await tx.analysisReport.create({
           data: { userId, repositoryId, jobId: job.id },
+        });
+        await new StatService().updateStats(userId, createMetrics(4), tx);
+        await tx.user.update({
+          where: { id: userId },
+          data: { availableTokens: { increment: 10 } },
         });
         await analysisJobService.transition(
           {
@@ -273,17 +301,34 @@ describeDatabase('AnalysisJob PostgreSQL invariants', () => {
           },
           tx,
         );
+        await tx.repository.update({
+          where: { id: repositoryId },
+          data: { lastSyncTime: checkpoint },
+        });
         throw new Error('force rollback');
       }),
     ).rejects.toThrow('force rollback');
 
-    const [persistedJob, persistedReport] = await Promise.all([
+    const [
+      persistedJob,
+      persistedReport,
+      userAfter,
+      statAfter,
+      repositoryAfter,
+    ] = await Promise.all([
       prisma.analysisJob.findUniqueOrThrow({ where: { id: job.id } }),
       prisma.analysisReport.findUnique({ where: { jobId: job.id } }),
+      prisma.user.findUniqueOrThrow({ where: { id: userId } }),
+      prisma.userStat.findUniqueOrThrow({ where: { userId } }),
+      prisma.repository.findUniqueOrThrow({ where: { id: repositoryId } }),
     ]);
     expect(persistedJob.status).toBe(AnalysisJobStatus.RUNNING);
     expect(persistedJob.tokensSettledAt).toBeNull();
     expect(persistedReport).toBeNull();
+    expect(userAfter.availableTokens).toBe(userBefore.availableTokens);
+    expect(statAfter.analysisCount).toBe(statBefore.analysisCount);
+    expect(statAfter.mutualRespectScore).toBe(statBefore.mutualRespectScore);
+    expect(repositoryAfter.lastSyncTime).toEqual(repositoryBefore.lastSyncTime);
   });
 
   it('serializes concurrent creation of the first user aggregate', async () => {
@@ -720,6 +765,260 @@ describeDatabase('AnalysisJob PostgreSQL invariants', () => {
     });
   });
 
+  it('allows exactly one concurrent Worker to claim a queued Job', async () => {
+    const job = await createWorkerJob('worker-concurrent-claim');
+    const now = new Date('2026-08-25T09:00:00.000Z');
+    const expiresAt = new Date('2026-08-25T09:15:00.000Z');
+
+    const results = await Promise.all([
+      analysisWorkerRepository.claim(job.id, 'worker-lease-a', now, expiresAt),
+      new AnalysisWorkerRepository(prisma as unknown as PrismaService).claim(
+        job.id,
+        'worker-lease-b',
+        now,
+        expiresAt,
+      ),
+    ]);
+
+    expect(results.filter((result) => result.kind === 'CLAIMED')).toHaveLength(
+      1,
+    );
+    expect(
+      results.filter((result) => result.kind === 'ACTIVE_LEASE'),
+    ).toHaveLength(1);
+    await expect(
+      prisma.analysisJob.findUniqueOrThrow({ where: { id: job.id } }),
+    ).resolves.toMatchObject({
+      status: AnalysisJobStatus.RUNNING,
+      stage: 'COLLECTING',
+      progress: 10,
+      attemptCount: 1,
+    });
+  });
+
+  it('takes over an expired lease and fences progress from the stale Worker', async () => {
+    const job = await createWorkerJob('worker-takeover', {
+      status: AnalysisJobStatus.RUNNING,
+      stage: 'ANALYZING',
+      progress: 55,
+      attemptCount: 1,
+      leaseToken: 'expired-worker-lease',
+      leaseExpiresAt: new Date('2026-08-25T09:00:00.000Z'),
+      heartbeatAt: new Date('2026-08-25T08:59:00.000Z'),
+      startedAt: new Date('2026-08-25T08:45:00.000Z'),
+    });
+    const now = new Date('2026-08-25T09:01:00.000Z');
+    const expiresAt = new Date('2026-08-25T09:16:00.000Z');
+
+    await expect(
+      analysisWorkerRepository.claim(
+        job.id,
+        'replacement-worker-lease',
+        now,
+        expiresAt,
+      ),
+    ).resolves.toMatchObject({
+      kind: 'CLAIMED',
+      leaseToken: 'replacement-worker-lease',
+      job: { attemptCount: 2, progress: 10, stage: 'COLLECTING' },
+    });
+
+    await expect(
+      analysisWorkerRepository.updateProgress({
+        jobId: job.id,
+        leaseToken: 'expired-worker-lease',
+        stage: 'SAVING',
+        progress: 90,
+        heartbeatAt: now,
+        leaseExpiresAt: expiresAt,
+      }),
+    ).rejects.toBeInstanceOf(StaleAnalysisWorkerLeaseError);
+    await expect(
+      prisma.analysisJob.findUniqueOrThrow({ where: { id: job.id } }),
+    ).resolves.toMatchObject({
+      leaseToken: 'replacement-worker-lease',
+      progress: 10,
+      stage: 'COLLECTING',
+    });
+  });
+
+  it('refunds a final Worker reservation exactly once', async () => {
+    const user = await prisma.user.create({
+      data: {
+        githubId: 'worker-final-refund-user',
+        username: 'worker-final-refund-user',
+        availableTokens: 80,
+      },
+    });
+    const repository = await prisma.repository.create({
+      data: {
+        githubRepoId: 'worker-final-refund-repository',
+        fullName: 'owner/worker-final-refund',
+        ownerId: user.id,
+      },
+    });
+    const job = await prisma.analysisJob.create({
+      data: {
+        userId: user.id,
+        repositoryId: repository.id,
+        idempotencyKey: 'worker-final-refund',
+        requestHash: 'd'.repeat(64),
+        status: AnalysisJobStatus.RUNNING,
+        stage: 'ANALYZING',
+        progress: 55,
+        estimatedTokens: 10,
+        reservedTokens: 20,
+        attemptCount: 5,
+        leaseToken: 'final-worker-lease',
+        leaseExpiresAt: new Date('2026-08-25T10:15:00.000Z'),
+        heartbeatAt: new Date('2026-08-25T10:00:00.000Z'),
+        startedAt: new Date('2026-08-25T09:45:00.000Z'),
+      },
+    });
+    const completedAt = new Date('2026-08-25T10:00:00.000Z');
+    const finalize = () =>
+      analysisWorkerRepository.finalizeRunningFailure({
+        jobId: job.id,
+        leaseToken: 'final-worker-lease',
+        completedAt,
+        errorCode: 'MAX_ATTEMPTS_EXCEEDED',
+        errorMessage: 'The maximum number of attempts was exceeded.',
+        errorRetryable: true,
+      });
+
+    await expect(finalize()).resolves.toBe(true);
+    await expect(finalize()).resolves.toBe(false);
+
+    await expect(
+      prisma.user.findUniqueOrThrow({
+        where: { id: user.id },
+        select: { availableTokens: true },
+      }),
+    ).resolves.toEqual({ availableTokens: 100 });
+    await expect(
+      prisma.analysisJob.findUniqueOrThrow({ where: { id: job.id } }),
+    ).resolves.toMatchObject({
+      status: AnalysisJobStatus.FAILED,
+      stage: null,
+      lastErrorCode: 'MAX_ATTEMPTS_EXCEEDED',
+      errorRetryable: true,
+      promptTokens: 0,
+      completionTokens: 0,
+      totalTokens: 0,
+      tokensSettledAt: completedAt,
+      completedAt,
+      leaseToken: null,
+    });
+  });
+
+  it('processes five deliveries idempotently with one report, stat update, provider call, and settlement', async () => {
+    const user = await prisma.user.create({
+      data: {
+        githubId: 'worker-idempotency-user',
+        username: 'worker-idempotency-user',
+        availableTokens: 100,
+      },
+    });
+    const repository = await prisma.repository.create({
+      data: {
+        githubRepoId: 'worker-idempotency-repository',
+        fullName: 'owner/worker-idempotency',
+        ownerId: user.id,
+        lastSyncTime: new Date('2026-08-24T00:00:00.000Z'),
+      },
+    });
+    const createdAt = new Date('2026-08-25T11:00:00.000Z');
+    const job = await prisma.analysisJob.create({
+      data: {
+        userId: user.id,
+        repositoryId: repository.id,
+        idempotencyKey: 'worker-idempotency',
+        requestHash: 'f'.repeat(64),
+        sourceCursor: repository.lastSyncTime,
+        createdAt,
+      },
+    });
+    const analyze = jest.fn().mockResolvedValue({
+      providerRequestId: 'chatcmpl_worker_idempotency',
+      result: { communicationStyle: 'clear' },
+      usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+    });
+    const runner = new AnalysisJobRunnerService(
+      prisma as unknown as PrismaService,
+      {
+        refine: jest.fn().mockReturnValue({ pullRequests: [{}] }),
+      } as unknown as RefinerService,
+      {
+        preprocess: jest.fn().mockReturnValue({}),
+      } as unknown as PreprocessorService,
+      {
+        estimateTokenReservationForData: jest.fn().mockReturnValue({
+          estimatedTokens: 10,
+          reservedTokens: 20,
+        }),
+        analyze,
+      } as unknown as LlmProviderService,
+      {
+        calculate: jest.fn().mockReturnValue(createMetrics(4)),
+      } as unknown as MetricCalculatorService,
+      new StatService(),
+      analysisJobService,
+    );
+    const collection = {
+      collect: jest.fn().mockResolvedValue({
+        githubRepoId: repository.githubRepoId,
+        owner: 'owner',
+        repo: 'worker-idempotency',
+        targetUser: user.username,
+        pullRequests: [{}],
+      }),
+    };
+    const worker = new AnalysisWorkerService(
+      analysisWorkerRepository,
+      collection as unknown as RepositoryCollectionService,
+      runner,
+      new AnalysisWorkerErrorClassifier(),
+      new ConfigService({
+        ASYNC_ANALYSIS_ENABLED: 'false',
+        ANALYSIS_WORKER_LEASE_SECONDS: '900',
+      }),
+    );
+    const record = createIntegrationSqsRecord(job.id, 1);
+
+    for (let delivery = 0; delivery < 5; delivery += 1) {
+      await expect(
+        worker.processBatch([record], `postgres-worker-${delivery}`),
+      ).resolves.toEqual({ batchItemFailures: [] });
+    }
+
+    expect(analyze).toHaveBeenCalledTimes(1);
+    expect(collection.collect).toHaveBeenCalledTimes(1);
+    await expect(
+      prisma.analysisReport.count({ where: { jobId: job.id } }),
+    ).resolves.toBe(1);
+    await expect(
+      prisma.userStat.findUniqueOrThrow({ where: { userId: user.id } }),
+    ).resolves.toMatchObject({ analysisCount: 1 });
+    await expect(
+      prisma.user.findUniqueOrThrow({ where: { id: user.id } }),
+    ).resolves.toMatchObject({ availableTokens: 85 });
+    const completedJob = await prisma.analysisJob.findUniqueOrThrow({
+      where: { id: job.id },
+    });
+    expect(completedJob).toMatchObject({
+      status: AnalysisJobStatus.SUCCEEDED,
+      stage: null,
+      progress: 100,
+      attemptCount: 1,
+      reservedTokens: 20,
+      totalTokens: 15,
+    });
+    expect(completedJob.tokensSettledAt).toBeInstanceOf(Date);
+    await expect(
+      prisma.repository.findUniqueOrThrow({ where: { id: repository.id } }),
+    ).resolves.toMatchObject({ lastSyncTime: createdAt });
+  });
+
   it('keeps lastSyncTime monotonic when an older sync finishes last', async () => {
     const olderSyncStartedAt = new Date('2026-08-21T11:00:00.000Z');
     const newerSyncStartedAt = new Date('2026-08-21T11:05:00.000Z');
@@ -818,6 +1117,21 @@ describeDatabase('AnalysisJob PostgreSQL invariants', () => {
     });
   }
 
+  function createWorkerJob(
+    idempotencyKey: string,
+    overrides: Partial<Prisma.AnalysisJobUncheckedCreateInput> = {},
+  ) {
+    return prisma.analysisJob.create({
+      data: {
+        userId,
+        repositoryId,
+        idempotencyKey,
+        requestHash: 'e'.repeat(64),
+        ...overrides,
+      },
+    });
+  }
+
   function createPublishConfig(): AnalysisJobQueueConfig {
     return new AnalysisJobQueueConfig(
       new ConfigService({
@@ -841,6 +1155,28 @@ describeDatabase('AnalysisJob PostgreSQL invariants', () => {
       knowledgeSharingScore: score,
       technicalInfluenceScore: score,
       codeStabilityScore: score,
+    };
+  }
+
+  function createIntegrationSqsRecord(
+    jobId: string,
+    receiveCount: number,
+  ): SQSRecord {
+    return {
+      messageId: `message-${jobId}`,
+      receiptHandle: `receipt-${jobId}`,
+      body: JSON.stringify({ schemaVersion: 1, jobId }),
+      attributes: {
+        ApproximateReceiveCount: String(receiveCount),
+        SentTimestamp: '0',
+        SenderId: 'postgres-integration',
+        ApproximateFirstReceiveTimestamp: '0',
+      },
+      messageAttributes: {},
+      md5OfBody: 'checksum',
+      eventSource: 'aws:sqs',
+      eventSourceARN: 'arn:aws:sqs:us-east-1:000000000000:queue.fifo',
+      awsRegion: 'us-east-1',
     };
   }
 });

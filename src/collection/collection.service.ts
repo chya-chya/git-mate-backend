@@ -5,11 +5,9 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { GithubProvider } from './github.provider';
 import { ICollectionService } from './interfaces/collection.interface';
 import {
   CollectedDataDto,
-  RepositoryQueryResponse,
   EstimateResponseDto,
 } from './types/github-api.types';
 import { AnalysisService } from '../analysis/analysis.service';
@@ -17,12 +15,13 @@ import { GithubAppService } from '../github-app/github-app.service';
 import { GithubInstallationTokenService } from '../github-app/github-installation-token.service';
 import { Repository } from '@prisma/client';
 import { ActiveAnalysisJobExistsError } from '../analysis-job/analysis-job.repository';
+import { RepositoryCollectionService } from './repository-collection.service';
 
 @Injectable()
 export class CollectionService implements ICollectionService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly githubProvider: GithubProvider,
+    private readonly repositoryCollection: RepositoryCollectionService,
     private readonly analysisService: AnalysisService,
     private readonly githubAppService: GithubAppService,
     private readonly installationTokens: GithubInstallationTokenService,
@@ -50,46 +49,13 @@ export class CollectionService implements ICollectionService {
     }
 
     const syncStartedAt = new Date();
-    const [owner, repoName] = repository.fullName.split('/');
-
-    const githubData =
-      await this.installationTokens.executeForRepository<RepositoryQueryResponse>(
-        userId,
-        githubRepoId,
-        (octokit) =>
-          this.githubProvider.fetchPullRequests(
-            owner,
-            repoName,
-            octokit,
-            repository.lastSyncTime ?? undefined,
-          ) as Promise<RepositoryQueryResponse>,
-      );
-
-    // Transform data
-    const collectedData: CollectedDataDto = {
+    const collectedData = await this.repositoryCollection.collect({
+      userId,
       githubRepoId,
-      owner,
-      repo: repoName,
+      fullName: repository.fullName,
       targetUser: repository.owner.username,
-      pullRequests: githubData.repository.pullRequests.nodes.map((pr) => ({
-        number: pr.number,
-        title: pr.title,
-        body: pr.body,
-        author: pr.author.login,
-        updatedAt: pr.updatedAt,
-        permalink: pr.permalink,
-        reviews: pr.reviews.nodes.map((review) => ({
-          author: review.author.login,
-          body: review.body,
-          state: review.state,
-          comments: review.comments.nodes.map((comment) => ({
-            author: comment.author.login,
-            body: comment.body,
-            createdAt: comment.createdAt,
-          })),
-        })),
-      })),
-    };
+      sourceCursor: repository.lastSyncTime ?? undefined,
+    });
 
     // 🚀 Trigger Analysis (Await so Lambda doesn't exit early)
     // AWS Lambda will freeze execution if we return before this completes.
@@ -144,50 +110,18 @@ export class CollectionService implements ICollectionService {
       );
     }
 
-    const [owner, repoName] = repository.fullName.split('/');
+    const collectedData = await this.repositoryCollection.collect({
+      userId,
+      githubRepoId,
+      fullName: repository.fullName,
+      targetUser: repository.owner.username,
+      sourceCursor: repository.lastSyncTime ?? undefined,
+    });
 
-    const githubData =
-      await this.installationTokens.executeForRepository<RepositoryQueryResponse>(
-        userId,
-        githubRepoId,
-        (octokit) =>
-          this.githubProvider.fetchPullRequests(
-            owner,
-            repoName,
-            octokit,
-            repository.lastSyncTime ?? undefined,
-          ) as Promise<RepositoryQueryResponse>,
-      );
-
-    const rawPrCount = githubData.repository.pullRequests.nodes.length;
+    const rawPrCount = collectedData.pullRequests.length;
     if (rawPrCount === 0) {
       return { prCount: 0, estimatedTokens: 0 };
     }
-
-    const collectedData: CollectedDataDto = {
-      githubRepoId,
-      owner,
-      repo: repoName,
-      targetUser: repository.owner.username,
-      pullRequests: githubData.repository.pullRequests.nodes.map((pr) => ({
-        number: pr.number,
-        title: pr.title,
-        body: pr.body,
-        author: pr.author.login,
-        updatedAt: pr.updatedAt,
-        permalink: pr.permalink,
-        reviews: pr.reviews.nodes.map((review) => ({
-          author: review.author.login,
-          body: review.body,
-          state: review.state,
-          comments: review.comments.nodes.map((comment) => ({
-            author: comment.author.login,
-            body: comment.body,
-            createdAt: comment.createdAt,
-          })),
-        })),
-      })),
-    };
 
     const { prCount, estimatedTokens } =
       await this.analysisService.estimateTokens(collectedData);

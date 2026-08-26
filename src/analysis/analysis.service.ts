@@ -34,6 +34,12 @@ export type AnalysisCompletionAction = (
   tx: Prisma.TransactionClient,
 ) => Promise<unknown>;
 
+export interface AnalysisJobRunOptions {
+  deferUnbilledProviderErrors?: boolean;
+  onTokensReserved?: () => Promise<void>;
+  onSaving?: () => Promise<void>;
+}
+
 interface ResolvedAnalysisJobExecutionContext
   extends AnalysisJobExecutionContext, AnalysisExecutionVersion {
   reservedTokens: number | null;
@@ -171,6 +177,7 @@ export class AnalysisJobRunnerService {
     data: CollectedDataDto,
     jobContext: AnalysisJobExecutionContext,
     completionAction?: AnalysisCompletionAction,
+    options: AnalysisJobRunOptions = {},
   ): Promise<AnalysisJobExecutionResult> {
     const job = await this.analysisJobService.getRunningJobContext(
       jobContext.jobId,
@@ -207,6 +214,7 @@ export class AnalysisJobRunnerService {
       data,
       resolvedContext,
       completionAction,
+      options,
     );
   }
 
@@ -216,6 +224,7 @@ export class AnalysisJobRunnerService {
     data: CollectedDataDto,
     jobContext: ResolvedAnalysisJobExecutionContext,
     completionAction?: AnalysisCompletionAction,
+    options: AnalysisJobRunOptions = {},
   ): Promise<AnalysisJobExecutionResult> {
     this.logger.log(
       `Starting analysis for User ${userId}, Repo ${repositoryId}...`,
@@ -295,6 +304,7 @@ export class AnalysisJobRunnerService {
         }
         throw error;
       }
+      await options.onTokensReserved?.();
 
       // 3. LLM Analysis
       let llmResponse: LlmAnalysisResponse;
@@ -316,6 +326,9 @@ export class AnalysisJobRunnerService {
             outcome: AnalysisJobExecutionOutcome.RECONCILIATION_REQUIRED,
             error,
           };
+        }
+        if (options.deferUnbilledProviderErrors === true) {
+          throw error;
         }
         await this.terminateWorkerJob(
           userId,
@@ -411,6 +424,7 @@ export class AnalysisJobRunnerService {
 
       // 5. Save Report, Update Stats, and Settle Tokens in a Transaction
       try {
+        await options.onSaving?.();
         await this.prisma.$transaction(async (tx) => {
           // A. Save Report
           const report = await tx.analysisReport.create({
