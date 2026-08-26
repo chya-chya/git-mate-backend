@@ -9,7 +9,10 @@ import {
   AnalysisJobQueueConfig,
   AnalysisJobQueueConfigurationError,
 } from './queue/analysis-job-queue.config';
-import { ANALYSIS_JOB_QUEUE } from './queue/analysis-job.queue';
+import {
+  ANALYSIS_JOB_QUEUE,
+  AnalysisJobQueueRejectedError,
+} from './queue/analysis-job.queue';
 import type { AnalysisJobQueue } from './queue/analysis-job.queue';
 
 const INTERNAL_UNCERTAIN_PUBLISH_CODES = new Set([
@@ -62,7 +65,10 @@ export class AnalysisJobPublisherService {
       if (!this.isDue(job, now, settings.republishAfterSeconds, options)) {
         return AnalysisJobPublishOutcome.SKIPPED;
       }
-      if (job.publishAttempts >= settings.maxAttempts) {
+      if (
+        job.publishAttempts >= settings.maxAttempts &&
+        !this.requiresPublishRecovery(job)
+      ) {
         return AnalysisJobPublishOutcome.SKIPPED;
       }
       this.config.getSqsSettings();
@@ -96,7 +102,9 @@ export class AnalysisJobPublisherService {
           job,
           attempt,
           claimedNextPublishAt,
-          deliveryUncertain,
+          deliveryUncertain:
+            deliveryUncertain ||
+            !(error instanceof AnalysisJobQueueRejectedError),
           now,
           maxAttempts: settings.maxAttempts,
           republishAfterSeconds: settings.republishAfterSeconds,
@@ -206,6 +214,14 @@ export class AnalysisJobPublisherService {
       options.allowRepublish &&
       job.messagePublishedAt.getTime() <=
         now.getTime() - republishAfterSeconds * 1000
+    );
+  }
+
+  private requiresPublishRecovery(job: AnalysisJobPublishRecord): boolean {
+    return (
+      job.reservedTokens !== null ||
+      (job.lastErrorCode !== null &&
+        INTERNAL_UNCERTAIN_PUBLISH_CODES.has(job.lastErrorCode))
     );
   }
 

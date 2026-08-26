@@ -51,8 +51,18 @@ describe('AnalysisJobPublishRepository', () => {
         where: {
           status: AnalysisJobStatus.QUEUED,
           idempotencyKey: { not: { startsWith: 'sync:' } },
-          publishAttempts: { lt: 5 },
           AND: [
+            {
+              OR: [
+                { publishAttempts: { lt: 5 } },
+                {
+                  lastErrorCode: {
+                    in: ['PUBLISH_IN_PROGRESS', 'PUBLISH_DELIVERY_UNCERTAIN'],
+                  },
+                },
+                { reservedTokens: { not: null } },
+              ],
+            },
             {
               OR: [{ nextPublishAt: null }, { nextPublishAt: { lte: NOW } }],
             },

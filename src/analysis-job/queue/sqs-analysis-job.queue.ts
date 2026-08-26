@@ -3,11 +3,13 @@ import {
   SendMessageCommand,
   SendMessageCommandOutput,
   SQSClient,
+  SQSServiceException,
 } from '@aws-sdk/client-sqs';
 import {
   AnalysisJobQueue,
   AnalysisJobQueueMessage,
   AnalysisJobQueuePublishResult,
+  AnalysisJobQueueRejectedError,
 } from './analysis-job.queue';
 import { AnalysisJobQueueConfig } from './analysis-job-queue.config';
 
@@ -64,10 +66,25 @@ export class SqsAnalysisJobQueue implements AnalysisJobQueue, OnModuleDestroy {
         },
       },
     });
-    const result = await this.getClient().send(command, {
-      abortSignal: AbortSignal.timeout(SQS_REQUEST_TIMEOUT_MS),
-    });
-    return { messageId: result.MessageId };
+    try {
+      const result = await this.getClient().send(command, {
+        abortSignal: AbortSignal.timeout(SQS_REQUEST_TIMEOUT_MS),
+      });
+      return { messageId: result.MessageId };
+    } catch (error) {
+      if (
+        error instanceof SQSServiceException &&
+        error.$fault === 'client' &&
+        (error.$metadata.attempts === undefined ||
+          error.$metadata.attempts === 1)
+      ) {
+        throw new AnalysisJobQueueRejectedError(
+          'SQS rejected the analysis job message.',
+          { cause: error },
+        );
+      }
+      throw error;
+    }
   }
 
   onModuleDestroy(): void {

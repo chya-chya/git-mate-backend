@@ -9,7 +9,10 @@ import {
   AnalysisJobPublisherService,
 } from '../analysis-job-publisher.service';
 import { AnalysisJobQueueConfig } from '../queue/analysis-job-queue.config';
-import { AnalysisJobQueue } from '../queue/analysis-job.queue';
+import {
+  AnalysisJobQueue,
+  AnalysisJobQueueRejectedError,
+} from '../queue/analysis-job.queue';
 
 const NOW = new Date('2026-08-25T00:00:00.000Z');
 
@@ -100,8 +103,10 @@ describe('AnalysisJobPublisherService', () => {
     );
   });
 
-  it('defers a confirmed SQS failure with exponential bounded jitter', async () => {
-    queue.publish.mockRejectedValueOnce(new Error('connection refused'));
+  it('defers a confirmed SQS rejection with exponential bounded jitter', async () => {
+    queue.publish.mockRejectedValueOnce(
+      new AnalysisJobQueueRejectedError('rejected'),
+    );
     const service = createService();
     const job = createJob({ publishAttempts: 1 });
 
@@ -141,7 +146,9 @@ describe('AnalysisJobPublisherService', () => {
   });
 
   it('terminates only a fully unsettled Job after the maximum confirmed failure', async () => {
-    queue.publish.mockRejectedValueOnce(new Error('unavailable'));
+    queue.publish.mockRejectedValueOnce(
+      new AnalysisJobQueueRejectedError('rejected'),
+    );
     const service = createService(2);
     const job = createJob({
       publishAttempts: 1,
@@ -160,6 +167,92 @@ describe('AnalysisJobPublisherService', () => {
     expect(repository.recordFailure).toHaveBeenCalledWith(
       expect.objectContaining({ terminate: true }),
     );
+  });
+
+  it('keeps the final transport failure queued as delivery uncertain', async () => {
+    queue.publish.mockRejectedValueOnce(new Error('socket timed out'));
+    const service = createService(2);
+    const job = createJob({
+      publishAttempts: 1,
+      lastErrorCode: 'PUBLISH_ATTEMPT_FAILED',
+    });
+
+    await expect(
+      service.publish(job, {
+        allowRepublish: false,
+        now: NOW,
+        traceId: 'trace-transport-timeout',
+        random: 0,
+      }),
+    ).resolves.toBe(AnalysisJobPublishOutcome.DEFERRED);
+
+    expect(repository.recordFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        deliveryUncertain: true,
+        terminate: false,
+      }),
+    );
+  });
+
+  it('recovers a publish claim that crashed at the maximum attempt', async () => {
+    const service = createService(5);
+    const job = createJob({
+      publishAttempts: 5,
+      lastErrorCode: 'PUBLISH_IN_PROGRESS',
+    });
+
+    await expect(
+      service.publish(job, {
+        allowRepublish: true,
+        now: NOW,
+        traceId: 'trace-max-in-progress',
+      }),
+    ).resolves.toBe(AnalysisJobPublishOutcome.PUBLISHED);
+
+    expect(repository.claimAttempt).toHaveBeenCalledWith(
+      expect.objectContaining({ job, deliveryUncertain: true }),
+    );
+    expect(repository.markPublished).toHaveBeenCalledWith(
+      expect.objectContaining({ attempt: 6 }),
+      NOW,
+    );
+  });
+
+  it('recovers reserved tokens after the maximum publish attempt', async () => {
+    const service = createService(5);
+    const job = createJob({
+      publishAttempts: 5,
+      reservedTokens: 100,
+      lastErrorCode: 'PUBLISH_ATTEMPT_FAILED',
+    });
+
+    await expect(
+      service.publish(job, {
+        allowRepublish: true,
+        now: NOW,
+        traceId: 'trace-max-reserved',
+      }),
+    ).resolves.toBe(AnalysisJobPublishOutcome.PUBLISHED);
+
+    expect(repository.claimAttempt).toHaveBeenCalled();
+    expect(queue.publish).toHaveBeenCalled();
+  });
+
+  it('does not republish a settled Job at the maximum attempt', async () => {
+    const service = createService(5);
+
+    await expect(
+      service.publish(
+        createJob({
+          publishAttempts: 5,
+          messagePublishedAt: new Date('2026-08-24T00:00:00.000Z'),
+        }),
+        { allowRepublish: true, now: NOW, traceId: 'trace-max-settled' },
+      ),
+    ).resolves.toBe(AnalysisJobPublishOutcome.SKIPPED);
+
+    expect(repository.claimAttempt).not.toHaveBeenCalled();
+    expect(queue.publish).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -214,7 +307,9 @@ describe('AnalysisJobPublisherService', () => {
   });
 
   it('does not count a configuration error as an SQS attempt', async () => {
-    const config = new AnalysisJobQueueConfig(new ConfigService({}));
+    const config = new AnalysisJobQueueConfig(
+      new ConfigService({ AWS_REGION: '', ANALYSIS_JOB_QUEUE_URL: '' }),
+    );
     const service = new AnalysisJobPublisherService(
       repository as unknown as AnalysisJobPublishRepository,
       queue as AnalysisJobQueue,

@@ -67,8 +67,18 @@ export class AnalysisJobPublishRepository {
       where: {
         status: AnalysisJobStatus.QUEUED,
         idempotencyKey: { not: { startsWith: 'sync:' } },
-        publishAttempts: { lt: maxAttempts },
         AND: [
+          {
+            OR: [
+              { publishAttempts: { lt: maxAttempts } },
+              {
+                lastErrorCode: {
+                  in: ['PUBLISH_IN_PROGRESS', 'PUBLISH_DELIVERY_UNCERTAIN'],
+                },
+              },
+              { reservedTokens: { not: null } },
+            ],
+          },
           {
             OR: [{ nextPublishAt: null }, { nextPublishAt: { lte: now } }],
           },

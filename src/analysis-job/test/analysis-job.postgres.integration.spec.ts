@@ -29,7 +29,10 @@ import {
 } from '../analysis-job-publish.repository';
 import { AnalysisJobReconcilerService } from '../analysis-job-reconciler.service';
 import { AnalysisJobQueueConfig } from '../queue/analysis-job-queue.config';
-import { AnalysisJobQueue } from '../queue/analysis-job.queue';
+import {
+  AnalysisJobQueue,
+  AnalysisJobQueueRejectedError,
+} from '../queue/analysis-job.queue';
 
 const runDatabaseIntegrationTests =
   process.env.RUN_DATABASE_INTEGRATION_TESTS === 'true';
@@ -683,7 +686,9 @@ describeDatabase('AnalysisJob PostgreSQL invariants', () => {
       lastErrorCode: 'PUBLISH_ATTEMPT_FAILED',
     });
     const queue: AnalysisJobQueue = {
-      publish: jest.fn().mockRejectedValue(new Error('fault injection')),
+      publish: jest
+        .fn()
+        .mockRejectedValue(new AnalysisJobQueueRejectedError('rejected')),
     };
     const publisherService = new AnalysisJobPublisherService(
       analysisJobPublishRepository,

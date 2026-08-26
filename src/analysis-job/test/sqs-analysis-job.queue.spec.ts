@@ -2,8 +2,10 @@ import { ConfigService } from '@nestjs/config';
 import {
   SendMessageCommand,
   SendMessageCommandOutput,
+  SQSServiceException,
 } from '@aws-sdk/client-sqs';
 import { AnalysisJobQueueConfig } from '../queue/analysis-job-queue.config';
+import { AnalysisJobQueueRejectedError } from '../queue/analysis-job.queue';
 import {
   AnalysisJobSqsClientFactory,
   SqsAnalysisJobQueue,
@@ -103,8 +105,83 @@ describe('SqsAnalysisJobQueue', () => {
     );
   });
 
+  it('classifies an explicit SQS service rejection as confirmed', async () => {
+    send.mockRejectedValueOnce(
+      new SQSServiceException({
+        name: 'InvalidMessageContents',
+        $fault: 'client',
+        $metadata: { httpStatusCode: 400 },
+      }),
+    );
+    const queue = new SqsAnalysisJobQueue(config, factory);
+
+    await expect(
+      queue.publish({
+        jobId: JOB_ID,
+        userId: 7,
+        repositoryId: 17,
+        traceId: TRACE_ID,
+      }),
+    ).rejects.toBeInstanceOf(AnalysisJobQueueRejectedError);
+  });
+
+  it('keeps an SQS server fault delivery uncertain', async () => {
+    const serverError = new SQSServiceException({
+      name: 'InternalError',
+      $fault: 'server',
+      $metadata: { httpStatusCode: 500, attempts: 1 },
+    });
+    send.mockRejectedValueOnce(serverError);
+    const queue = new SqsAnalysisJobQueue(config, factory);
+
+    await expect(
+      queue.publish({
+        jobId: JOB_ID,
+        userId: 7,
+        repositoryId: 17,
+        traceId: TRACE_ID,
+      }),
+    ).rejects.toBe(serverError);
+  });
+
+  it('keeps a retried SQS client rejection delivery uncertain', async () => {
+    const retriedClientError = new SQSServiceException({
+      name: 'RequestThrottled',
+      $fault: 'client',
+      $metadata: { httpStatusCode: 400, attempts: 2 },
+    });
+    send.mockRejectedValueOnce(retriedClientError);
+    const queue = new SqsAnalysisJobQueue(config, factory);
+
+    await expect(
+      queue.publish({
+        jobId: JOB_ID,
+        userId: 7,
+        repositoryId: 17,
+        traceId: TRACE_ID,
+      }),
+    ).rejects.toBe(retriedClientError);
+  });
+
+  it('preserves a transport error as an unknown delivery result', async () => {
+    const transportError = new Error('socket timed out');
+    send.mockRejectedValueOnce(transportError);
+    const queue = new SqsAnalysisJobQueue(config, factory);
+
+    await expect(
+      queue.publish({
+        jobId: JOB_ID,
+        userId: 7,
+        repositoryId: 17,
+        traceId: TRACE_ID,
+      }),
+    ).rejects.toBe(transportError);
+  });
+
   it('starts without SQS settings and validates them only on publish', async () => {
-    const missingConfig = new AnalysisJobQueueConfig(new ConfigService({}));
+    const missingConfig = new AnalysisJobQueueConfig(
+      new ConfigService({ AWS_REGION: '', ANALYSIS_JOB_QUEUE_URL: '' }),
+    );
     const queue = new SqsAnalysisJobQueue(missingConfig, factory);
 
     await expect(
