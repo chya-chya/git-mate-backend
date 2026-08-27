@@ -344,7 +344,7 @@ describe('AnalysisJobRunnerService', () => {
     expect(llmProvider.analyze).not.toHaveBeenCalled();
   });
 
-  it('does not call the LLM when a retry finds a durable provider checkpoint', async () => {
+  it('recovers a durable provider checkpoint without collected data or an LLM call', async () => {
     const { analysisJobService, llmProvider, service, transaction } =
       createFixture({
         reservedTokens: 20,
@@ -356,7 +356,11 @@ describe('AnalysisJobRunnerService', () => {
         },
       });
 
-    await service.runAnalysisJob({} as never, jobContext);
+    await expect(
+      service.recoverProviderCheckpoint(jobContext),
+    ).resolves.toMatchObject({
+      outcome: AnalysisJobExecutionOutcome.RECONCILIATION_REQUIRED,
+    });
 
     expect(llmProvider.analyze).not.toHaveBeenCalled();
     expect(analysisJobService.recordProviderCharge).not.toHaveBeenCalled();
@@ -390,6 +394,22 @@ describe('AnalysisJobRunnerService', () => {
       },
     });
     expect(transitionCalls[0][1]).toBe(transaction);
+  });
+
+  it('returns null from checkpoint recovery when normal collection and analysis should continue', async () => {
+    const { analysisJobService, llmProvider, service, transaction } =
+      createFixture();
+
+    await expect(
+      service.recoverProviderCheckpoint(jobContext),
+    ).resolves.toBeNull();
+
+    expect(analysisJobService.getRunningJobContext).toHaveBeenCalledWith(
+      jobContext.jobId,
+      jobContext.leaseToken,
+    );
+    expect(llmProvider.analyze).not.toHaveBeenCalled();
+    expect(transaction.user.updateMany).not.toHaveBeenCalled();
   });
 
   it('does not call the LLM when a retry finds a request-only provider checkpoint', async () => {

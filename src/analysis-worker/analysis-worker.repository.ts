@@ -128,11 +128,26 @@ export class AnalysisWorkerRepository {
     ) {
       return { kind: 'ACTIVE_LEASE' };
     }
-    if (current.attemptCount >= current.maxAttempts) {
-      return { kind: 'MAX_ATTEMPTS', job: current };
-    }
     if (current.leaseToken === null || current.leaseExpiresAt === null) {
       return { kind: 'ACTIVE_LEASE' };
+    }
+    if (this.hasProviderBillingEvidence(current)) {
+      const recovered = await this.takeOverExpiredBilledLease(
+        current,
+        leaseToken,
+        now,
+        leaseExpiresAt,
+      );
+      return recovered
+        ? {
+            kind: 'CLAIMED',
+            job: await this.requireClaimedJob(jobId, leaseToken),
+            leaseToken,
+          }
+        : this.resolveClaimRace(jobId, now);
+    }
+    if (current.attemptCount >= current.maxAttempts) {
+      return { kind: 'MAX_ATTEMPTS', job: current };
     }
 
     const takenOver = await this.takeOverExpiredLease(
@@ -374,6 +389,55 @@ export class AnalysisWorkerRepository {
       RETURNING "id"
     `;
     return rows.length === 1;
+  }
+
+  private async takeOverExpiredBilledLease(
+    current: AnalysisWorkerJob,
+    leaseToken: string,
+    now: Date,
+    leaseExpiresAt: Date,
+  ): Promise<boolean> {
+    const rows = await this.prisma.$queryRaw<Array<{ id: string }>>`
+      UPDATE "analysis_jobs"
+      SET
+        "stage" = 'SAVING'::"AnalysisJobStage",
+        "progress" = GREATEST("progress", 90),
+        "leaseToken" = ${leaseToken},
+        "leaseExpiresAt" = ${leaseExpiresAt},
+        "heartbeatAt" = ${now},
+        "updatedAt" = ${now}
+      WHERE
+        "id" = ${current.id}
+        AND "status" = 'RUNNING'::"AnalysisJobStatus"
+        AND "leaseToken" = ${current.leaseToken}
+        AND "leaseExpiresAt" = ${current.leaseExpiresAt}
+        AND "leaseExpiresAt" <= ${now}
+        AND "attemptCount" = ${current.attemptCount}
+        AND (
+          cardinality("providerRequestIds") > 0
+          OR "promptTokens" IS NOT NULL
+          OR "completionTokens" IS NOT NULL
+          OR "totalTokens" IS NOT NULL
+        )
+        AND "completedAt" IS NULL
+        AND "tokensSettledAt" IS NULL
+      RETURNING "id"
+    `;
+    return rows.length === 1;
+  }
+
+  private hasProviderBillingEvidence(
+    job: Pick<
+      AnalysisWorkerJob,
+      'providerRequestIds' | 'promptTokens' | 'completionTokens' | 'totalTokens'
+    >,
+  ): boolean {
+    return (
+      job.providerRequestIds.length > 0 ||
+      job.promptTokens !== null ||
+      job.completionTokens !== null ||
+      job.totalTokens !== null
+    );
   }
 
   private async resolveClaimRace(

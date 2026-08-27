@@ -145,6 +145,21 @@ export class AnalysisWorkerService {
     traceId: string,
   ): Promise<AnalysisWorkerRecordOutcome> {
     try {
+      const recovered = await this.analysisJobRunner.recoverProviderCheckpoint({
+        jobId: job.id,
+        leaseToken,
+      });
+      if (recovered !== null) {
+        this.logger.log({
+          event: 'analysis_worker_job_recovered',
+          jobId: job.id,
+          traceId,
+          attempt: job.attemptCount,
+          outcome: recovered.outcome,
+        });
+        return AnalysisWorkerRecordOutcome.ACK;
+      }
+
       const collectedData = await this.repositoryCollection.collect({
         userId: job.userId,
         githubRepoId: job.repository.githubRepoId,

@@ -91,6 +91,55 @@ describe('AnalysisWorkerRepository', () => {
     });
   });
 
+  it('recovery-claims expired billed work at the attempt limit without incrementing attempts', async () => {
+    const expired = createJob({
+      leaseToken: 'expired-lease',
+      leaseExpiresAt: new Date('2026-08-25T23:59:00.000Z'),
+      attemptCount: 5,
+      maxAttempts: 5,
+      reservedTokens: 20,
+      promptTokens: 10,
+      completionTokens: 5,
+      totalTokens: 15,
+      providerRequestIds: ['chatcmpl_checkpoint_123'],
+    });
+    const recovered = createJob({
+      stage: AnalysisJobStage.SAVING,
+      progress: 90,
+      leaseToken: 'recovery-lease',
+      leaseExpiresAt,
+      attemptCount: 5,
+      maxAttempts: 5,
+      reservedTokens: 20,
+      promptTokens: 10,
+      completionTokens: 5,
+      totalTokens: 15,
+      providerRequestIds: ['chatcmpl_checkpoint_123'],
+    });
+    analysisJob.findUnique.mockResolvedValue(expired);
+    prisma.$queryRaw.mockResolvedValue([{ id: expired.id }]);
+    analysisJob.findFirst.mockResolvedValue(recovered);
+
+    await expect(
+      repository.claim(expired.id, 'recovery-lease', now, leaseExpiresAt),
+    ).resolves.toMatchObject({
+      kind: 'CLAIMED',
+      job: { attemptCount: 5, leaseToken: 'recovery-lease' },
+    });
+
+    analysisJob.updateMany.mockResolvedValue({ count: 0 });
+    await expect(
+      repository.updateProgress({
+        jobId: expired.id,
+        leaseToken: 'expired-lease',
+        stage: AnalysisJobStage.SAVING,
+        progress: 90,
+        heartbeatAt: now,
+        leaseExpiresAt,
+      }),
+    ).rejects.toBeInstanceOf(StaleAnalysisWorkerLeaseError);
+  });
+
   it('acks terminal Jobs without attempting a claim', async () => {
     analysisJob.findUnique.mockResolvedValue(
       createJob({ status: AnalysisJobStatus.SUCCEEDED }),

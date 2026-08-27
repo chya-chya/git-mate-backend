@@ -16,6 +16,7 @@ import {
   AnalysisJobFailureCode,
   AnalysisJobService,
 } from '../analysis-job/analysis-job.service';
+import type { RunningAnalysisJobContext } from '../analysis-job/analysis-job.repository';
 import {
   AnalysisExecutionVersion,
   assertSupportedAnalysisExecutionVersion,
@@ -43,6 +44,11 @@ export interface AnalysisJobRunOptions {
 interface ResolvedAnalysisJobExecutionContext
   extends AnalysisJobExecutionContext, AnalysisExecutionVersion {
   reservedTokens: number | null;
+}
+
+interface ResolvedRunningAnalysisJobExecution {
+  job: RunningAnalysisJobContext;
+  context: ResolvedAnalysisJobExecutionContext;
 }
 
 export enum AnalysisJobExecutionOutcome {
@@ -179,43 +185,73 @@ export class AnalysisJobRunnerService {
     completionAction?: AnalysisCompletionAction,
     options: AnalysisJobRunOptions = {},
   ): Promise<AnalysisJobExecutionResult> {
+    const resolved = await this.resolveRunningExecution(jobContext);
+    const recovered = await this.reconcileProviderCheckpoint(resolved);
+    if (recovered !== null) {
+      return recovered;
+    }
+    assertSupportedAnalysisExecutionVersion(resolved.context);
+    return this.executeAnalysis(
+      resolved.job.userId,
+      resolved.job.repositoryId,
+      data,
+      resolved.context,
+      completionAction,
+      options,
+    );
+  }
+
+  /**
+   * Reconcile a durable provider checkpoint before the Worker performs any
+   * repository collection. Returns null when the Job has no checkpoint.
+   */
+  async recoverProviderCheckpoint(
+    jobContext: AnalysisJobExecutionContext,
+  ): Promise<AnalysisJobExecutionResult | null> {
+    const resolved = await this.resolveRunningExecution(jobContext);
+    return this.reconcileProviderCheckpoint(resolved);
+  }
+
+  private async resolveRunningExecution(
+    jobContext: AnalysisJobExecutionContext,
+  ): Promise<ResolvedRunningAnalysisJobExecution> {
     const job = await this.analysisJobService.getRunningJobContext(
       jobContext.jobId,
       jobContext.leaseToken,
     );
-    const resolvedContext = {
-      ...jobContext,
-      reservedTokens: job.reservedTokens,
-      modelVersion: job.modelVersion,
-      promptVersion: job.promptVersion,
+    return {
+      job,
+      context: {
+        ...jobContext,
+        reservedTokens: job.reservedTokens,
+        modelVersion: job.modelVersion,
+        promptVersion: job.promptVersion,
+      },
     };
-    const providerCheckpoint = this.getProviderChargeCheckpoint(job);
-    if (providerCheckpoint !== null) {
-      await this.terminateProviderReconciliation(
-        job.userId,
-        job.repositoryId,
-        resolvedContext,
-        job.reservedTokens,
+  }
+
+  private async reconcileProviderCheckpoint(
+    resolved: ResolvedRunningAnalysisJobExecution,
+  ): Promise<AnalysisJobExecutionResult | null> {
+    const providerCheckpoint = this.getProviderChargeCheckpoint(resolved.job);
+    if (providerCheckpoint === null) {
+      return null;
+    }
+    await this.terminateProviderReconciliation(
+      resolved.job.userId,
+      resolved.job.repositoryId,
+      resolved.context,
+      resolved.job.reservedTokens,
+      providerCheckpoint.providerRequestId,
+      providerCheckpoint.usage,
+    );
+    return {
+      outcome: AnalysisJobExecutionOutcome.RECONCILIATION_REQUIRED,
+      error: new LlmProviderReconciliationError(
         providerCheckpoint.providerRequestId,
         providerCheckpoint.usage,
-      );
-      return {
-        outcome: AnalysisJobExecutionOutcome.RECONCILIATION_REQUIRED,
-        error: new LlmProviderReconciliationError(
-          providerCheckpoint.providerRequestId,
-          providerCheckpoint.usage,
-        ),
-      };
-    }
-    assertSupportedAnalysisExecutionVersion(resolvedContext);
-    return this.executeAnalysis(
-      job.userId,
-      job.repositoryId,
-      data,
-      resolvedContext,
-      completionAction,
-      options,
-    );
+      ),
+    };
   }
 
   private async executeAnalysis(

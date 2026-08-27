@@ -34,7 +34,10 @@ describe('AnalysisWorkerService', () => {
     advanceRepositoryCheckpoint: jest.fn(),
   };
   const repositoryCollection = { collect: jest.fn() };
-  const analysisJobRunner = { runAnalysisJob: jest.fn() };
+  const analysisJobRunner = {
+    recoverProviderCheckpoint: jest.fn(),
+    runAnalysisJob: jest.fn(),
+  };
   const service = new AnalysisWorkerService(
     repository as unknown as AnalysisWorkerRepository,
     repositoryCollection as unknown as RepositoryCollectionService,
@@ -56,6 +59,7 @@ describe('AnalysisWorkerService', () => {
     repository.finalizeQueuedAtLimit.mockResolvedValue(true);
     repository.advanceRepositoryCheckpoint.mockResolvedValue({ count: 1 });
     repositoryCollection.collect.mockResolvedValue(collectedData);
+    analysisJobRunner.recoverProviderCheckpoint.mockResolvedValue(null);
     analysisJobRunner.runAnalysisJob.mockResolvedValue({
       outcome: AnalysisJobExecutionOutcome.SUCCEEDED,
       metrics: {},
@@ -184,6 +188,45 @@ describe('AnalysisWorkerService', () => {
     expect(repository.advanceRepositoryCheckpoint).toHaveBeenCalledWith(job, {
       repository: {},
     });
+    expect(analysisJobRunner.runAnalysisJob).toHaveBeenCalledWith(
+      collectedData,
+      { jobId, leaseToken: 'lease-1' },
+      expect.any(Function),
+      expect.any(Object),
+    );
+    expect(
+      analysisJobRunner.recoverProviderCheckpoint.mock.invocationCallOrder[0],
+    ).toBeLessThan(repositoryCollection.collect.mock.invocationCallOrder[0]);
+  });
+
+  it('acks a billed checkpoint through runner recovery without GitHub collection', async () => {
+    const job = createJob({
+      reservedTokens: 20,
+      promptTokens: 10,
+      completionTokens: 5,
+      totalTokens: 15,
+      providerRequestIds: ['chatcmpl_checkpoint_123'],
+    });
+    repository.claim.mockResolvedValue({
+      kind: 'CLAIMED',
+      job,
+      leaseToken: 'recovery-lease',
+    });
+    analysisJobRunner.recoverProviderCheckpoint.mockResolvedValue({
+      outcome: AnalysisJobExecutionOutcome.RECONCILIATION_REQUIRED,
+      error: new Error('reconciled'),
+    });
+
+    await expect(
+      service.processBatch([createRecord('message-1')], 'request-1'),
+    ).resolves.toEqual({ batchItemFailures: [] });
+
+    expect(analysisJobRunner.recoverProviderCheckpoint).toHaveBeenCalledWith({
+      jobId,
+      leaseToken: 'recovery-lease',
+    });
+    expect(repositoryCollection.collect).not.toHaveBeenCalled();
+    expect(analysisJobRunner.runAnalysisJob).not.toHaveBeenCalled();
   });
 
   it('requeues OpenAI rate limits while preserving the reservation', async () => {

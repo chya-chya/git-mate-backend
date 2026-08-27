@@ -842,6 +842,64 @@ describeDatabase('AnalysisJob PostgreSQL invariants', () => {
     });
   });
 
+  it('recovery-claims expired billed work at max attempts and preserves the stale fence', async () => {
+    const job = await createWorkerJob('worker-billed-recovery', {
+      status: AnalysisJobStatus.RUNNING,
+      stage: 'ANALYZING',
+      progress: 55,
+      estimatedTokens: 10,
+      reservedTokens: 20,
+      promptTokens: 10,
+      completionTokens: 5,
+      totalTokens: 15,
+      providerRequestIds: ['chatcmpl_worker_billed_recovery'],
+      attemptCount: 5,
+      maxAttempts: 5,
+      leaseToken: 'expired-billed-lease',
+      leaseExpiresAt: new Date('2026-08-25T09:00:00.000Z'),
+      heartbeatAt: new Date('2026-08-25T08:59:00.000Z'),
+      startedAt: new Date('2026-08-25T08:45:00.000Z'),
+    });
+    const now = new Date('2026-08-25T09:01:00.000Z');
+    const expiresAt = new Date('2026-08-25T09:16:00.000Z');
+
+    await expect(
+      analysisWorkerRepository.claim(
+        job.id,
+        'billed-recovery-lease',
+        now,
+        expiresAt,
+      ),
+    ).resolves.toMatchObject({
+      kind: 'CLAIMED',
+      leaseToken: 'billed-recovery-lease',
+      job: {
+        attemptCount: 5,
+        progress: 90,
+        stage: 'SAVING',
+      },
+    });
+
+    await expect(
+      analysisWorkerRepository.updateProgress({
+        jobId: job.id,
+        leaseToken: 'expired-billed-lease',
+        stage: 'SAVING',
+        progress: 90,
+        heartbeatAt: now,
+        leaseExpiresAt: expiresAt,
+      }),
+    ).rejects.toBeInstanceOf(StaleAnalysisWorkerLeaseError);
+    await expect(
+      prisma.analysisJob.findUniqueOrThrow({ where: { id: job.id } }),
+    ).resolves.toMatchObject({
+      attemptCount: 5,
+      leaseToken: 'billed-recovery-lease',
+      progress: 90,
+      stage: 'SAVING',
+    });
+  });
+
   it('refunds a final Worker reservation exactly once', async () => {
     const user = await prisma.user.create({
       data: {
