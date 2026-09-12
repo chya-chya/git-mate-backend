@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { PrismaPg } from '@prisma/adapter-pg';
-import { AnalysisJobStatus, Prisma, PrismaClient } from '@prisma/client';
+import { AnalysisJobStatus, PrismaClient } from '@prisma/client';
 import {
   DeleteMessageCommand,
   PurgeQueueCommand,
@@ -141,46 +141,50 @@ describeSqs('Analysis Job LocalStack SQS integration', () => {
     const analysisJobService = new AnalysisJobService(
       new AnalysisJobRepository(prisma),
     );
-    const runAnalysisJob = jest.fn(
-      async (
-        _data: unknown,
-        context: { jobId: string; leaseToken: string },
-        completionAction: (
-          transaction: Prisma.TransactionClient,
-        ) => Promise<unknown>,
-      ) => {
-        const running = await prisma.analysisJob.findUniqueOrThrow({
-          where: { id: context.jobId },
-        });
-        const completedAt = new Date();
-        await prisma.$transaction(async (transaction) => {
-          await analysisJobService.transition(
-            {
-              jobId: context.jobId,
-              fromStatus: AnalysisJobStatus.RUNNING,
-              toStatus: AnalysisJobStatus.FAILED,
-              expectedLeaseToken: context.leaseToken,
-              expectedUserId: running.userId,
-              expectedRepositoryId: running.repositoryId,
-              expectedReservedTokens: null,
-              data: {
-                completedAt,
-                tokensSettledAt: completedAt,
-                promptTokens: 0,
-                completionTokens: 0,
-                totalTokens: 0,
-                providerRequestIds: [],
-                errorCode: AnalysisJobFailureCode.NO_ANALYZABLE_DATA,
-                errorRetryable: false,
-              },
+    const recoverProviderCheckpoint = jest
+      .fn<
+        ReturnType<AnalysisJobRunnerService['recoverProviderCheckpoint']>,
+        Parameters<AnalysisJobRunnerService['recoverProviderCheckpoint']>
+      >()
+      .mockResolvedValue(null);
+    const runAnalysisJob = jest.fn<
+      ReturnType<AnalysisJobRunnerService['runAnalysisJob']>,
+      Parameters<AnalysisJobRunnerService['runAnalysisJob']>
+    >(async (_data, context, completionAction) => {
+      if (!completionAction) {
+        throw new Error('Expected the Worker completion action.');
+      }
+      const running = await prisma.analysisJob.findUniqueOrThrow({
+        where: { id: context.jobId },
+      });
+      const completedAt = new Date();
+      await prisma.$transaction(async (transaction) => {
+        await analysisJobService.transition(
+          {
+            jobId: context.jobId,
+            fromStatus: AnalysisJobStatus.RUNNING,
+            toStatus: AnalysisJobStatus.FAILED,
+            expectedLeaseToken: context.leaseToken,
+            expectedUserId: running.userId,
+            expectedRepositoryId: running.repositoryId,
+            expectedReservedTokens: null,
+            data: {
+              completedAt,
+              tokensSettledAt: completedAt,
+              promptTokens: 0,
+              completionTokens: 0,
+              totalTokens: 0,
+              providerRequestIds: [],
+              errorCode: AnalysisJobFailureCode.NO_ANALYZABLE_DATA,
+              errorRetryable: false,
             },
-            transaction,
-          );
-          await completionAction(transaction);
-        });
-        return { outcome: AnalysisJobExecutionOutcome.NO_ANALYZABLE_DATA };
-      },
-    );
+          },
+          transaction,
+        );
+        await completionAction(transaction);
+      });
+      return { outcome: AnalysisJobExecutionOutcome.NO_ANALYZABLE_DATA };
+    });
     const repositoryCollection = {
       collect: jest.fn().mockResolvedValue({
         githubRepoId: 'worker-delivery',
@@ -190,10 +194,17 @@ describeSqs('Analysis Job LocalStack SQS integration', () => {
         pullRequests: [],
       }),
     };
+    const analysisJobRunner = {
+      recoverProviderCheckpoint,
+      runAnalysisJob,
+    } satisfies Pick<
+      AnalysisJobRunnerService,
+      'recoverProviderCheckpoint' | 'runAnalysisJob'
+    >;
     const worker = new AnalysisWorkerService(
       new AnalysisWorkerRepository(prisma as unknown as PrismaService),
       repositoryCollection as unknown as RepositoryCollectionService,
-      { runAnalysisJob } as unknown as AnalysisJobRunnerService,
+      analysisJobRunner as unknown as AnalysisJobRunnerService,
       new AnalysisWorkerErrorClassifier(),
       new ConfigService({
         ASYNC_ANALYSIS_ENABLED: 'false',
@@ -204,6 +215,12 @@ describeSqs('Analysis Job LocalStack SQS integration', () => {
     await expect(
       worker.processBatch([toSqsRecord(message)], 'localstack-request'),
     ).resolves.toEqual({ batchItemFailures: [] });
+    expect(recoverProviderCheckpoint).toHaveBeenCalledTimes(1);
+    expect(recoverProviderCheckpoint.mock.calls[0]?.[0]?.jobId).toBe(job.id);
+    expect(
+      recoverProviderCheckpoint.mock.calls[0]?.[0]?.leaseToken,
+    ).toBeTruthy();
+    expect(repositoryCollection.collect).toHaveBeenCalledTimes(1);
     expect(runAnalysisJob).toHaveBeenCalledTimes(1);
     await expect(
       prisma.analysisJob.findUniqueOrThrow({ where: { id: job.id } }),
