@@ -1,18 +1,17 @@
 import { ConflictException, ForbiddenException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
-import { Octokit } from '@octokit/rest';
 import { ActiveAnalysisJobExistsError } from '../../analysis-job/analysis-job.repository';
 import { AnalysisService } from '../../analysis/analysis.service';
 import { GithubAppService } from '../../github-app/github-app.service';
 import { GithubInstallationTokenService } from '../../github-app/github-installation-token.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CollectionService } from '../collection.service';
-import { GithubProvider } from '../github.provider';
+import { RepositoryCollectionService } from '../repository-collection.service';
 
 describe('CollectionService', () => {
   let service: CollectionService;
-  const githubProvider = {
-    fetchPullRequests: jest.fn(),
+  const repositoryCollection = {
+    collect: jest.fn(),
   };
   const prisma = {
     user: {
@@ -58,7 +57,10 @@ describe('CollectionService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         CollectionService,
-        { provide: GithubProvider, useValue: githubProvider },
+        {
+          provide: RepositoryCollectionService,
+          useValue: repositoryCollection,
+        },
         { provide: PrismaService, useValue: prisma },
         { provide: AnalysisService, useValue: analysisService },
         { provide: GithubAppService, useValue: githubAppService },
@@ -76,7 +78,7 @@ describe('CollectionService', () => {
     jest.useRealTimers();
   });
 
-  it('fetches pull requests through an installation token', async () => {
+  it('uses the repository cursor when collecting pull requests', async () => {
     const repository = {
       id: 1,
       githubRepoId: '11',
@@ -86,32 +88,25 @@ describe('CollectionService', () => {
       owner: { username: 'developer' },
     };
     prisma.repository.findUnique.mockResolvedValue(repository);
-    githubProvider.fetchPullRequests.mockResolvedValue({
-      repository: { pullRequests: { nodes: [] } },
+    repositoryCollection.collect.mockResolvedValue({
+      githubRepoId: '11',
+      owner: 'owner',
+      repo: 'private-repo',
+      targetUser: 'developer',
+      pullRequests: [],
     });
-    installationTokens.executeForRepository.mockImplementation(
-      async (
-        _userId: number,
-        _githubRepoId: string,
-        operation: (octokit: Octokit) => Promise<unknown>,
-      ) => operation({} as Octokit),
-    );
     transaction.repository.updateMany.mockResolvedValue({ count: 1 });
     mockSuccessfulAnalysis();
 
     await service.syncRepository('11', 7);
 
-    expect(installationTokens.executeForRepository).toHaveBeenCalledWith(
-      7,
-      '11',
-      expect.any(Function),
-    );
-    expect(githubProvider.fetchPullRequests).toHaveBeenCalledWith(
-      'owner',
-      'private-repo',
-      expect.anything(),
-      repository.lastSyncTime,
-    );
+    expect(repositoryCollection.collect).toHaveBeenCalledWith({
+      userId: 7,
+      githubRepoId: '11',
+      fullName: 'owner/private-repo',
+      targetUser: 'developer',
+      sourceCursor: repository.lastSyncTime,
+    });
   });
 
   it('preserves the existing sync response and analysis input contract', async () => {
@@ -124,40 +119,6 @@ describe('CollectionService', () => {
       lastSyncTime: null,
       ownerId: 7,
       owner: { username: 'developer' },
-    };
-    const githubData = {
-      repository: {
-        pullRequests: {
-          nodes: [
-            {
-              number: 42,
-              title: 'Keep the API contract',
-              body: 'PR body',
-              author: { login: 'reviewer' },
-              updatedAt: '2026-06-12T00:00:00Z',
-              permalink: 'https://github.com/owner/private-repo/pull/42',
-              reviews: {
-                nodes: [
-                  {
-                    author: { login: 'maintainer' },
-                    body: 'Looks good',
-                    state: 'APPROVED',
-                    comments: {
-                      nodes: [
-                        {
-                          author: { login: 'maintainer' },
-                          body: 'Nice change',
-                          createdAt: '2026-06-12T00:01:00Z',
-                        },
-                      ],
-                    },
-                  },
-                ],
-              },
-            },
-          ],
-        },
-      },
     };
     const expectedResponse = {
       githubRepoId: '11',
@@ -190,17 +151,10 @@ describe('CollectionService', () => {
       ],
     };
     prisma.repository.findUnique.mockResolvedValue(repository);
-    installationTokens.executeForRepository.mockImplementation(
-      async (
-        _userId: number,
-        _githubRepoId: string,
-        operation: (octokit: Octokit) => Promise<unknown>,
-      ) => {
-        jest.setSystemTime(new Date('2026-06-12T12:05:00Z'));
-        return operation({} as Octokit);
-      },
-    );
-    githubProvider.fetchPullRequests.mockResolvedValue(githubData);
+    repositoryCollection.collect.mockImplementation(() => {
+      jest.setSystemTime(new Date('2026-06-12T12:05:00Z'));
+      return Promise.resolve(expectedResponse);
+    });
     transaction.repository.updateMany.mockResolvedValue({ count: 1 });
     mockSuccessfulAnalysis();
 
@@ -237,15 +191,12 @@ describe('CollectionService', () => {
       ownerId: 7,
       owner: { username: 'developer' },
     });
-    installationTokens.executeForRepository.mockImplementation(
-      async (
-        _userId: number,
-        _githubRepoId: string,
-        operation: (octokit: Octokit) => Promise<unknown>,
-      ) => operation({} as Octokit),
-    );
-    githubProvider.fetchPullRequests.mockResolvedValue({
-      repository: { pullRequests: { nodes: [] } },
+    repositoryCollection.collect.mockResolvedValue({
+      githubRepoId: '11',
+      owner: 'owner',
+      repo: 'private-repo',
+      targetUser: 'developer',
+      pullRequests: [],
     });
     analysisService.runAnalysis.mockRejectedValue(
       new ActiveAnalysisJobExistsError(1),
@@ -276,15 +227,12 @@ describe('CollectionService', () => {
       ownerId: 7,
       owner: { username: 'developer' },
     });
-    installationTokens.executeForRepository.mockImplementation(
-      async (
-        _userId: number,
-        _githubRepoId: string,
-        operation: (octokit: Octokit) => Promise<unknown>,
-      ) => operation({} as Octokit),
-    );
-    githubProvider.fetchPullRequests.mockResolvedValue({
-      repository: { pullRequests: { nodes: [] } },
+    repositoryCollection.collect.mockResolvedValue({
+      githubRepoId: '11',
+      owner: 'owner',
+      repo: 'private-repo',
+      targetUser: 'developer',
+      pullRequests: [],
     });
     mockSuccessfulAnalysis();
     transaction.repository.updateMany.mockResolvedValue({ count: 0 });
@@ -312,14 +260,14 @@ describe('CollectionService', () => {
       ownerId: 7,
       owner: { username: 'developer' },
     });
-    installationTokens.executeForRepository.mockRejectedValue(
+    repositoryCollection.collect.mockRejectedValue(
       new ForbiddenException('Repository is not accessible'),
     );
 
     await expect(service.syncRepository('11', 7)).rejects.toBeInstanceOf(
       ForbiddenException,
     );
-    expect(githubProvider.fetchPullRequests).not.toHaveBeenCalled();
+    expect(analysisService.runAnalysis).not.toHaveBeenCalled();
   });
 
   it('returns only repositories exposed by installations', async () => {

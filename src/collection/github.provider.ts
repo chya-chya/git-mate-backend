@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Octokit } from '@octokit/rest';
 import { IGithubProvider } from './interfaces/collection.interface';
+import { RepositoryQueryResponse } from './types/github-api.types';
 
 @Injectable()
 export class GithubProvider implements IGithubProvider {
@@ -13,7 +14,7 @@ export class GithubProvider implements IGithubProvider {
     octokit: Octokit,
     since?: Date,
     cursor?: string,
-  ): Promise<unknown> {
+  ): Promise<RepositoryQueryResponse> {
     const query = `
       query($owner: String!, $repo: String!, $cursor: String) {
         repository(owner: $owner, name: $repo) {
@@ -60,7 +61,7 @@ export class GithubProvider implements IGithubProvider {
       }
     `;
 
-    return octokit.graphql(query, {
+    return octokit.graphql<RepositoryQueryResponse>(query, {
       owner,
       repo,
       cursor,

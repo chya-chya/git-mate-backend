@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { PrismaPg } from '@prisma/adapter-pg';
-import { PrismaClient } from '@prisma/client';
+import { AnalysisJobStatus, PrismaClient } from '@prisma/client';
 import {
   DeleteMessageCommand,
   PurgeQueueCommand,
@@ -9,7 +9,21 @@ import {
 } from '@aws-sdk/client-sqs';
 import { ConfigService } from '@nestjs/config';
 import { Pool } from 'pg';
+import type { SQSRecord } from 'aws-lambda';
+import {
+  AnalysisJobExecutionOutcome,
+  AnalysisJobRunnerService,
+} from '../../analysis/analysis.service';
+import { AnalysisWorkerErrorClassifier } from '../../analysis-worker/analysis-worker-error-classifier';
+import { AnalysisWorkerRepository } from '../../analysis-worker/analysis-worker.repository';
+import { AnalysisWorkerService } from '../../analysis-worker/analysis-worker.service';
+import { RepositoryCollectionService } from '../../collection/repository-collection.service';
 import { PrismaService } from '../../prisma/prisma.service';
+import { AnalysisJobRepository } from '../analysis-job.repository';
+import {
+  AnalysisJobFailureCode,
+  AnalysisJobService,
+} from '../analysis-job.service';
 import {
   ClaimAnalysisJobPublishAttemptInput,
   AnalysisJobPublishRecord,
@@ -108,6 +122,112 @@ describeSqs('Analysis Job LocalStack SQS integration', () => {
     await queue.publish({ ...message, traceId: randomUUID() });
 
     await expect(receiveMessages()).resolves.toHaveLength(1);
+  });
+
+  it('delivers the published contract to the Worker while the public flag is false', async () => {
+    const job = await createDatabaseJob('worker-delivery');
+    const traceId = randomUUID();
+    await queue.publish({
+      jobId: job.id,
+      userId: job.userId,
+      repositoryId: job.repositoryId,
+      traceId,
+    });
+    const [message] = await receiveMessages();
+    if (!message) {
+      throw new Error('Expected a LocalStack message.');
+    }
+
+    const analysisJobService = new AnalysisJobService(
+      new AnalysisJobRepository(prisma),
+    );
+    const recoverProviderCheckpoint = jest
+      .fn<
+        ReturnType<AnalysisJobRunnerService['recoverProviderCheckpoint']>,
+        Parameters<AnalysisJobRunnerService['recoverProviderCheckpoint']>
+      >()
+      .mockResolvedValue(null);
+    const runAnalysisJob = jest.fn<
+      ReturnType<AnalysisJobRunnerService['runAnalysisJob']>,
+      Parameters<AnalysisJobRunnerService['runAnalysisJob']>
+    >(async (_data, context, completionAction) => {
+      if (!completionAction) {
+        throw new Error('Expected the Worker completion action.');
+      }
+      const running = await prisma.analysisJob.findUniqueOrThrow({
+        where: { id: context.jobId },
+      });
+      const completedAt = new Date();
+      await prisma.$transaction(async (transaction) => {
+        await analysisJobService.transition(
+          {
+            jobId: context.jobId,
+            fromStatus: AnalysisJobStatus.RUNNING,
+            toStatus: AnalysisJobStatus.FAILED,
+            expectedLeaseToken: context.leaseToken,
+            expectedUserId: running.userId,
+            expectedRepositoryId: running.repositoryId,
+            expectedReservedTokens: null,
+            data: {
+              completedAt,
+              tokensSettledAt: completedAt,
+              promptTokens: 0,
+              completionTokens: 0,
+              totalTokens: 0,
+              providerRequestIds: [],
+              errorCode: AnalysisJobFailureCode.NO_ANALYZABLE_DATA,
+              errorRetryable: false,
+            },
+          },
+          transaction,
+        );
+        await completionAction(transaction);
+      });
+      return { outcome: AnalysisJobExecutionOutcome.NO_ANALYZABLE_DATA };
+    });
+    const repositoryCollection = {
+      collect: jest.fn().mockResolvedValue({
+        githubRepoId: 'worker-delivery',
+        owner: 'integration',
+        repo: 'worker-delivery',
+        targetUser: 'sqs-worker-delivery',
+        pullRequests: [],
+      }),
+    };
+    const analysisJobRunner = {
+      recoverProviderCheckpoint,
+      runAnalysisJob,
+    } satisfies Pick<
+      AnalysisJobRunnerService,
+      'recoverProviderCheckpoint' | 'runAnalysisJob'
+    >;
+    const worker = new AnalysisWorkerService(
+      new AnalysisWorkerRepository(prisma as unknown as PrismaService),
+      repositoryCollection as unknown as RepositoryCollectionService,
+      analysisJobRunner as unknown as AnalysisJobRunnerService,
+      new AnalysisWorkerErrorClassifier(),
+      new ConfigService({
+        ASYNC_ANALYSIS_ENABLED: 'false',
+        ANALYSIS_WORKER_LEASE_SECONDS: '900',
+      }),
+    );
+
+    await expect(
+      worker.processBatch([toSqsRecord(message)], 'localstack-request'),
+    ).resolves.toEqual({ batchItemFailures: [] });
+    expect(recoverProviderCheckpoint).toHaveBeenCalledTimes(1);
+    expect(recoverProviderCheckpoint.mock.calls[0]?.[0]?.jobId).toBe(job.id);
+    expect(
+      recoverProviderCheckpoint.mock.calls[0]?.[0]?.leaseToken,
+    ).toBeTruthy();
+    expect(repositoryCollection.collect).toHaveBeenCalledTimes(1);
+    expect(runAnalysisJob).toHaveBeenCalledTimes(1);
+    await expect(
+      prisma.analysisJob.findUniqueOrThrow({ where: { id: job.id } }),
+    ).resolves.toMatchObject({
+      status: AnalysisJobStatus.FAILED,
+      lastErrorCode: AnalysisJobFailureCode.NO_ANALYZABLE_DATA,
+    });
   });
 
   it('recovers a committed DB Job after an unreachable endpoint', async () => {
@@ -266,6 +386,7 @@ describeSqs('Analysis Job LocalStack SQS integration', () => {
         QueueUrl: queueUrl,
         MaxNumberOfMessages: 10,
         WaitTimeSeconds: 1,
+        AttributeNames: ['All'],
         MessageAttributeNames: ['All'],
       }),
     );
@@ -310,5 +431,47 @@ describeSqs('Analysis Job LocalStack SQS integration', () => {
     await prisma.analysisJob.deleteMany({ where: { userId: { in: userIds } } });
     await prisma.repository.deleteMany({ where: { ownerId: { in: userIds } } });
     await prisma.user.deleteMany({ where: { id: { in: userIds } } });
+  }
+
+  function toSqsRecord(
+    message: Awaited<ReturnType<typeof receiveMessages>>[number],
+  ): SQSRecord {
+    if (!message.MessageId || !message.ReceiptHandle || !message.Body) {
+      throw new Error('LocalStack returned an incomplete SQS message.');
+    }
+    const messageAttributes = Object.fromEntries(
+      Object.entries(message.MessageAttributes ?? {}).map(([key, value]) => [
+        key,
+        {
+          stringValue: value.StringValue,
+          binaryValue: value.BinaryValue,
+          stringListValues: value.StringListValues ?? [],
+          binaryListValues: value.BinaryListValues ?? [],
+          dataType: value.DataType ?? 'String',
+        },
+      ]),
+    );
+    return {
+      messageId: message.MessageId,
+      receiptHandle: message.ReceiptHandle,
+      body: message.Body,
+      attributes: {
+        ApproximateReceiveCount:
+          message.Attributes?.ApproximateReceiveCount ?? '1',
+        SentTimestamp: message.Attributes?.SentTimestamp ?? '0',
+        SenderId: message.Attributes?.SenderId ?? 'localstack',
+        ApproximateFirstReceiveTimestamp:
+          message.Attributes?.ApproximateFirstReceiveTimestamp ?? '0',
+        SequenceNumber: message.Attributes?.SequenceNumber,
+        MessageGroupId: message.Attributes?.MessageGroupId,
+        MessageDeduplicationId: message.Attributes?.MessageDeduplicationId,
+        AWSTraceHeader: message.Attributes?.AWSTraceHeader,
+      },
+      messageAttributes,
+      md5OfBody: message.MD5OfBody ?? '',
+      eventSource: 'aws:sqs',
+      eventSourceARN: 'arn:aws:sqs:us-east-1:000000000000:queue.fifo',
+      awsRegion: 'us-east-1',
+    };
   }
 });

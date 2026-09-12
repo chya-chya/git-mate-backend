@@ -7,6 +7,8 @@ on:
       - 'prisma/**'
       - 'src/analysis/**'
       - 'src/analysis-job/**'
+      - 'src/analysis-worker/**'
+      - 'src/collection/**'
       - 'src/prisma/**'
       - 'test/**'
       - 'docker-compose.yml'
