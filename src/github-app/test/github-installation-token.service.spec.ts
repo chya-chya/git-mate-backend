@@ -253,6 +253,39 @@ describe('GithubInstallationTokenService', () => {
     expect(createInstallationAccessToken).toHaveBeenCalledTimes(1);
   });
 
+  it('preserves a provider-normalized rate-limit error across the token boundary', async () => {
+    prisma.userGithubInstallation.findMany.mockResolvedValue([
+      { installation: { githubInstallationId: '101' } },
+    ]);
+    prisma.githubInstallation.findFirst.mockResolvedValue({ id: 1 });
+    createInstallationAccessToken.mockResolvedValue({
+      data: {
+        token: 'installation-token',
+        expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+      },
+    });
+    mockListReposAccessibleToInstallation.mockResolvedValue({
+      data: {
+        repositories: [
+          {
+            id: 11,
+            full_name: 'owner/private-repo',
+            private: true,
+          },
+        ],
+      },
+    });
+    const rateLimit = new GithubRateLimitError(
+      429,
+      new Date('2026-09-12T00:03:00.000Z'),
+    );
+
+    await expect(
+      service.executeForRepository(7, '11', () => Promise.reject(rateLimit)),
+    ).rejects.toBe(rateLimit);
+    expect(createInstallationAccessToken).toHaveBeenCalledTimes(1);
+  });
+
   it('refreshes the token when repository listing returns 401', async () => {
     prisma.userGithubInstallation.findMany.mockResolvedValue([
       { installation: { githubInstallationId: '101' } },

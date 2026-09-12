@@ -32,8 +32,17 @@ export function normalizeGithubRequestError(
   error: unknown,
   now = new Date(),
 ): unknown {
+  if (error instanceof GithubRateLimitError) {
+    return error;
+  }
+
   const status = numericProperty(error, 'status');
-  if (status !== 403 && status !== 429) {
+  const metadataIndicatesRateLimit = hasRateLimitMetadata(error);
+  if (
+    status !== 403 &&
+    status !== 429 &&
+    !(status === null && metadataIndicatesRateLimit)
+  ) {
     return error;
   }
 
@@ -41,7 +50,6 @@ export function normalizeGithubRequestError(
   const retryAfter = validRetryAfter(headers.get('retry-after'), now);
   const remaining = headers.get('x-ratelimit-remaining')?.trim();
   const reset = validRateLimitReset(headers.get('x-ratelimit-reset'), now);
-  const metadataIndicatesRateLimit = hasRateLimitMetadata(error);
   const isRateLimit =
     status === 429 ||
     retryAfter !== null ||
@@ -56,7 +64,7 @@ export function normalizeGithubRequestError(
     retryAfter ??
     (remaining === '0' ? reset : null) ??
     new Date(now.getTime() + DEFAULT_RATE_LIMIT_DELAY_MS);
-  return new GithubRateLimitError(status, retryAt, {
+  return new GithubRateLimitError(status ?? 429, retryAt, {
     cause: error instanceof Error ? error : undefined,
   });
 }
@@ -94,13 +102,21 @@ function validRateLimitReset(
 
 function responseHeaders(error: unknown): Map<string, string> {
   const normalized = new Map<string, string>();
+  appendHeaders(normalized, objectProperty(error, 'headers'));
   const response = objectProperty(error, 'response');
-  const rawHeaders = objectProperty(response, 'headers');
+  appendHeaders(normalized, objectProperty(response, 'headers'));
+  return normalized;
+}
+
+function appendHeaders(
+  normalized: Map<string, string>,
+  rawHeaders: object | null,
+): void {
   if (rawHeaders instanceof Headers) {
     rawHeaders.forEach((value, key) =>
       normalized.set(key.toLowerCase(), value),
     );
-    return normalized;
+    return;
   }
   if (rawHeaders !== null) {
     for (const [key, value] of Object.entries(rawHeaders)) {
@@ -109,7 +125,6 @@ function responseHeaders(error: unknown): Map<string, string> {
       }
     }
   }
-  return normalized;
 }
 
 function hasRateLimitMetadata(error: unknown): boolean {
@@ -120,8 +135,9 @@ function hasRateLimitMetadata(error: unknown): boolean {
     return true;
   }
   const errors = arrayProperty(data, 'errors');
+  const responseErrors = arrayProperty(response, 'errors');
   const topLevelErrors = arrayProperty(error, 'errors');
-  return [...errors, ...topLevelErrors].some((item) => {
+  return [...errors, ...responseErrors, ...topLevelErrors].some((item) => {
     const type = stringProperty(item, 'type');
     return type?.toUpperCase() === 'RATE_LIMITED';
   });
