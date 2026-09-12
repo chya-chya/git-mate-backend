@@ -8,10 +8,13 @@ import {
   AnalysisJobRunnerService,
 } from '../../analysis/analysis.service';
 import { RepositoryCollectionService } from '../../collection/repository-collection.service';
+import { GithubRateLimitError } from '../../collection/github-errors';
+import { InputLimitExceededError } from '../../collection/collection-limits';
 import { AnalysisWorkerErrorClassifier } from '../analysis-worker-error-classifier';
 import {
   AnalysisWorkerJob,
   AnalysisWorkerRepository,
+  StaleAnalysisWorkerLeaseError,
 } from '../analysis-worker.repository';
 import { AnalysisWorkerService } from '../analysis-worker.service';
 
@@ -64,6 +67,10 @@ describe('AnalysisWorkerService', () => {
       outcome: AnalysisJobExecutionOutcome.SUCCEEDED,
       metrics: {},
     });
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
   });
 
   it('acks malformed JSON without a database or external call', async () => {
@@ -123,6 +130,11 @@ describe('AnalysisWorkerService', () => {
 
   it('uses DB-owned repository data, sourceCursor, progress hooks, and checkpoint completion', async () => {
     const job = createJob();
+    let receivedCollectionInput: unknown;
+    repositoryCollection.collect.mockImplementation((input: unknown) => {
+      receivedCollectionInput = input;
+      return Promise.resolve(collectedData);
+    });
     repository.claim.mockResolvedValue({
       kind: 'CLAIMED',
       job,
@@ -152,13 +164,25 @@ describe('AnalysisWorkerService', () => {
       service.processBatch([createRecord('message-1')], 'request-1'),
     ).resolves.toEqual({ batchItemFailures: [] });
 
-    expect(repositoryCollection.collect).toHaveBeenCalledWith({
+    expect(repositoryCollection.collect).toHaveBeenCalledTimes(1);
+    const collectionInput = receivedCollectionInput as {
+      userId: number;
+      githubRepoId: string;
+      fullName: string;
+      targetUser: string;
+      sourceCursor: Date;
+      collectionCutoff: Date;
+      onPage?: () => Promise<void>;
+    };
+    expect(collectionInput).toMatchObject({
       userId: 7,
       githubRepoId: '11',
       fullName: 'owner/repo',
       targetUser: 'developer',
       sourceCursor: job.sourceCursor,
+      collectionCutoff: job.createdAt,
     });
+    expect(typeof collectionInput.onPage).toBe('function');
     expect(repository.updateProgress.mock.calls).toEqual([
       [
         expect.objectContaining({
@@ -227,6 +251,92 @@ describe('AnalysisWorkerService', () => {
     });
     expect(repositoryCollection.collect).not.toHaveBeenCalled();
     expect(analysisJobRunner.runAnalysisJob).not.toHaveBeenCalled();
+  });
+
+  it('heartbeats a long collection and stops before analysis after a stale lease', async () => {
+    const startedAt = new Date('2026-08-26T00:00:00.000Z');
+    jest.useFakeTimers({ now: startedAt });
+    const staleLease = new StaleAnalysisWorkerLeaseError(jobId);
+    repository.claim.mockResolvedValue({
+      kind: 'CLAIMED',
+      job: createJob(),
+      leaseToken: 'lease-1',
+    });
+    repository.updateProgress
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(staleLease);
+    repositoryCollection.collect.mockImplementation(
+      async (input: { onPage?: () => Promise<void> }) => {
+        const { onPage } = input;
+        await onPage?.();
+        jest.setSystemTime(new Date(startedAt.getTime() + 31_000));
+        await onPage?.();
+        return collectedData;
+      },
+    );
+
+    await expect(
+      service.processBatch([createRecord('message-1')], 'request-1'),
+    ).resolves.toEqual({
+      batchItemFailures: [{ itemIdentifier: 'message-1' }],
+    });
+
+    expect(repository.updateProgress).toHaveBeenCalledTimes(2);
+    expect(repository.updateProgress).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        stage: AnalysisJobStage.COLLECTING,
+        progress: 10,
+      }),
+    );
+    expect(analysisJobRunner.runAnalysisJob).not.toHaveBeenCalled();
+  });
+
+  it('never schedules a GitHub rate-limit retry before retryAt', async () => {
+    const now = new Date('2026-08-26T00:00:00.000Z');
+    const retryAt = new Date('2026-08-26T00:05:00.000Z');
+    jest.useFakeTimers({ now });
+    repository.claim.mockResolvedValue({
+      kind: 'CLAIMED',
+      job: createJob(),
+      leaseToken: 'lease-1',
+    });
+    repositoryCollection.collect.mockRejectedValue(
+      new GithubRateLimitError(429, retryAt),
+    );
+
+    await service.processBatch([createRecord('message-1')], 'request-1');
+
+    expect(repository.releaseForRetry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        nextPublishAt: retryAt,
+        errorCode: 'GITHUB_TEMPORARY_FAILURE',
+      }),
+    );
+  });
+
+  it('finalizes collection limits without analysis or checkpoint movement', async () => {
+    repository.claim.mockResolvedValue({
+      kind: 'CLAIMED',
+      job: createJob(),
+      leaseToken: 'lease-1',
+    });
+    repositoryCollection.collect.mockRejectedValue(
+      new InputLimitExceededError('changed pull requests', 100, 101),
+    );
+
+    await expect(
+      service.processBatch([createRecord('message-1')], 'request-1'),
+    ).resolves.toEqual({ batchItemFailures: [] });
+
+    expect(repository.finalizeRunningFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        errorCode: 'INPUT_LIMIT_EXCEEDED',
+        errorRetryable: false,
+      }),
+    );
+    expect(analysisJobRunner.runAnalysisJob).not.toHaveBeenCalled();
+    expect(repository.advanceRepositoryCheckpoint).not.toHaveBeenCalled();
   });
 
   it('requeues OpenAI rate limits while preserving the reservation', async () => {
@@ -309,6 +419,27 @@ describe('AnalysisWorkerService', () => {
       service.processBatch([createRecord('message-1')], 'request-1'),
     ).resolves.toEqual({ batchItemFailures: [] });
     expect(repository.claim).toHaveBeenCalledTimes(1);
+  });
+
+  it('processes five deliveries of the same Job only once', async () => {
+    repository.claim
+      .mockResolvedValueOnce({
+        kind: 'CLAIMED',
+        job: createJob(),
+        leaseToken: 'lease-1',
+      })
+      .mockResolvedValue({ kind: 'TERMINAL' });
+    const deliveries = Array.from({ length: 5 }, (_, index) =>
+      createRecord(`message-${index + 1}`),
+    );
+
+    await expect(
+      service.processBatch(deliveries, 'request-1'),
+    ).resolves.toEqual({ batchItemFailures: [] });
+
+    expect(repository.claim).toHaveBeenCalledTimes(5);
+    expect(repositoryCollection.collect).toHaveBeenCalledTimes(1);
+    expect(analysisJobRunner.runAnalysisJob).toHaveBeenCalledTimes(1);
   });
 
   function createJob(

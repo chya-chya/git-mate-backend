@@ -1,6 +1,8 @@
 import {
   CollectedDataDto,
+  PullRequestReviewsQueryResponse,
   RepositoryQueryResponse,
+  ReviewCommentsQueryResponse,
 } from '../types/github-api.types';
 import { Octokit } from '@octokit/rest';
 
@@ -9,9 +11,18 @@ export interface IGithubProvider {
     owner: string,
     repo: string,
     octokit: Octokit,
-    since?: Date,
     cursor?: string,
   ): Promise<RepositoryQueryResponse>;
+  fetchPullRequestReviews(
+    pullRequestId: string,
+    octokit: Octokit,
+    cursor?: string,
+  ): Promise<PullRequestReviewsQueryResponse>;
+  fetchReviewComments(
+    reviewId: string,
+    octokit: Octokit,
+    cursor?: string,
+  ): Promise<ReviewCommentsQueryResponse>;
 }
 
 export interface ICollectionService {

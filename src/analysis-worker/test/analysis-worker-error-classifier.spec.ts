@@ -10,6 +10,11 @@ import {
   AnalysisWorkerErrorClassifier,
   AnalysisWorkerFailureCode,
 } from '../analysis-worker-error-classifier';
+import { InputLimitExceededError } from '../../collection/collection-limits';
+import {
+  GithubPaginationError,
+  GithubRateLimitError,
+} from '../../collection/github-errors';
 
 describe('AnalysisWorkerErrorClassifier', () => {
   const classifier = new AnalysisWorkerErrorClassifier();
@@ -43,6 +48,31 @@ describe('AnalysisWorkerErrorClassifier', () => {
   it('classifies permanent GitHub installation failures as terminal', () => {
     expect(classifier.classify(new ForbiddenException())).toMatchObject({
       code: AnalysisWorkerFailureCode.REPOSITORY_UNAVAILABLE,
+      retryable: false,
+    });
+  });
+
+  it('distinguishes rate limits, pagination failures, and input limits', () => {
+    const retryAt = new Date('2026-09-12T00:01:00.000Z');
+    expect(
+      classifier.classify(new GithubRateLimitError(403, retryAt)),
+    ).toMatchObject({
+      code: AnalysisWorkerFailureCode.GITHUB_TEMPORARY_FAILURE,
+      retryable: true,
+      retryAt,
+    });
+    expect(
+      classifier.classify(new GithubPaginationError('review', 'bad cursor')),
+    ).toMatchObject({
+      code: AnalysisWorkerFailureCode.GITHUB_PAGINATION_INVALID,
+      retryable: false,
+    });
+    expect(
+      classifier.classify(
+        new InputLimitExceededError('changed pull requests', 100, 101),
+      ),
+    ).toMatchObject({
+      code: AnalysisWorkerFailureCode.INPUT_LIMIT_EXCEEDED,
       retryable: false,
     });
   });

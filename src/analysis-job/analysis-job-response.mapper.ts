@@ -6,6 +6,7 @@ import { AnalysisJobApiRecord } from './analysis-job-api.types';
 const PUBLIC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   ANALYSIS_FAILED: '분석을 완료하지 못했습니다.',
   INSUFFICIENT_TOKENS: '분석에 필요한 토큰이 부족합니다.',
+  INPUT_LIMIT_EXCEEDED: 'LLM 입력 상한(80,000 tokens)을 초과했습니다.',
   MAX_ATTEMPTS_EXCEEDED: '최대 재시도 횟수를 초과했습니다.',
   NO_ANALYZABLE_DATA: '분석할 수 있는 저장소 활동이 없습니다.',
   PUBLISH_FAILED: '분석 작업을 처리 대기열에 등록하지 못했습니다.',
@@ -26,7 +27,7 @@ export class AnalysisJobResponseMapper {
       : null;
     const errorCode = job.lastErrorCode;
     const publicErrorMessage = errorCode
-      ? PUBLIC_ERROR_MESSAGES[errorCode]
+      ? this.publicErrorMessage(errorCode, job.lastErrorMessage)
       : undefined;
     const error =
       job.status === AnalysisJobStatus.FAILED && errorCode
@@ -59,5 +60,21 @@ export class AnalysisJobResponseMapper {
         self: `/analysis/jobs/${job.id}`,
       },
     };
+  }
+
+  private publicErrorMessage(
+    errorCode: string,
+    storedMessage: string | null,
+  ): string | undefined {
+    if (errorCode !== 'INPUT_LIMIT_EXCEEDED') {
+      return PUBLIC_ERROR_MESSAGES[errorCode];
+    }
+    if (storedMessage?.includes('changed pull requests')) {
+      return '변경 PR 상한(100개)을 초과했습니다.';
+    }
+    if (storedMessage?.includes('review and comment nodes')) {
+      return 'review/comment node 상한(2,000개)을 초과했습니다.';
+    }
+    return PUBLIC_ERROR_MESSAGES.INPUT_LIMIT_EXCEEDED;
   }
 }

@@ -6,7 +6,9 @@ import {
   LlmProviderService,
   LlmProviderReconciliationError,
   LlmTokenEstimationError,
+  assertAnalysisInputTokenLimit,
 } from '../llm-provider.service';
+import { InputLimitExceededError } from '../../collection/collection-limits';
 import {
   CURRENT_ANALYSIS_EXECUTION_VERSION,
   UnsupportedAnalysisExecutionVersionError,
@@ -111,5 +113,12 @@ describe('LlmProviderService billing metadata', () => {
       }),
     ).rejects.toBeInstanceOf(UnsupportedAnalysisExecutionVersionError);
     expect(create).not.toHaveBeenCalled();
+  });
+
+  it('accepts 80,000 estimated input tokens and rejects 80,001', () => {
+    expect(() => assertAnalysisInputTokenLimit(80_000)).not.toThrow();
+    expect(() => assertAnalysisInputTokenLimit(80_001)).toThrow(
+      InputLimitExceededError,
+    );
   });
 });

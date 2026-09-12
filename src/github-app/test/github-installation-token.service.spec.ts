@@ -2,6 +2,7 @@ import { ForbiddenException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { GithubAppAuthService } from '../github-app-auth.service';
 import { GithubInstallationTokenService } from '../github-installation-token.service';
+import { GithubRateLimitError } from '../../collection/github-errors';
 
 const mockListReposAccessibleToInstallation = jest.fn();
 
@@ -44,6 +45,10 @@ describe('GithubInstallationTokenService', () => {
       prisma as unknown as PrismaService,
       githubAppAuth as unknown as GithubAppAuthService,
     );
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
   });
 
   it('returns an actionable error when no GitHub App is installed', async () => {
@@ -222,6 +227,30 @@ describe('GithubInstallationTokenService', () => {
     ).resolves.toBe('success');
     expect(operation).toHaveBeenCalledTimes(2);
     expect(createInstallationAccessToken).toHaveBeenCalledTimes(2);
+  });
+
+  it('preserves typed rate-limit timing without sleeping or refreshing auth', async () => {
+    jest.useFakeTimers({ now: new Date('2026-09-12T00:00:00.000Z') });
+    prisma.userGithubInstallation.findMany.mockResolvedValue([
+      { installation: { githubInstallationId: '101' } },
+    ]);
+    prisma.githubInstallation.findFirst.mockResolvedValue({ id: 1 });
+    createInstallationAccessToken.mockResolvedValue({
+      data: {
+        token: 'installation-token',
+        expires_at: new Date('2026-09-12T01:00:00.000Z').toISOString(),
+      },
+    });
+    mockListReposAccessibleToInstallation.mockRejectedValue({
+      status: 429,
+      response: { headers: { 'retry-after': '90' }, data: {} },
+    });
+
+    await expect(service.getAvailableRepos(7)).rejects.toMatchObject({
+      name: GithubRateLimitError.name,
+      retryAt: new Date('2026-09-12T00:01:30.000Z'),
+    });
+    expect(createInstallationAccessToken).toHaveBeenCalledTimes(1);
   });
 
   it('refreshes the token when repository listing returns 401', async () => {
