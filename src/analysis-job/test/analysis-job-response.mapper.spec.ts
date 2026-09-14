@@ -101,4 +101,35 @@ describe('AnalysisJobResponseMapper', () => {
       retryable: false,
     });
   });
+
+  it.each([
+    [
+      'changed pull requests limit exceeded: found 101, maximum 100.',
+      '변경 PR 상한(100개)을 초과했습니다.',
+    ],
+    [
+      'review and comment nodes limit exceeded: found 2001, maximum 2000.',
+      'review/comment node 상한(2,000개)을 초과했습니다.',
+    ],
+    [
+      'The analysis input limit was exceeded.',
+      'LLM 입력 상한(80,000 tokens)을 초과했습니다.',
+    ],
+  ])('publishes the specific safe input-limit message', (stored, expected) => {
+    const response = mapper.toDto(
+      createRecord({
+        status: AnalysisJobStatus.FAILED,
+        report: null,
+        lastErrorCode: 'INPUT_LIMIT_EXCEEDED',
+        lastErrorMessage: stored,
+        errorRetryable: false,
+      }),
+    );
+
+    expect(response.error).toEqual({
+      code: 'INPUT_LIMIT_EXCEEDED',
+      message: expected,
+      retryable: false,
+    });
+  });
 });

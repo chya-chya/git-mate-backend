@@ -21,8 +21,20 @@ export interface ReviewCommentNode {
   body: string;
   author: {
     login: string;
-  };
+  } | null;
   createdAt: string;
+}
+
+export interface PageInfo {
+  endCursor: string | null;
+  hasNextPage: boolean;
+}
+
+export interface ReviewNode {
+  id: string;
+  body: string;
+  state: string;
+  author: { login: string } | null;
 }
 
 export interface PullRequestNode {
@@ -34,35 +46,43 @@ export interface PullRequestNode {
   permalink: string;
   author: {
     login: string;
-  };
+  } | null;
   createdAt: string;
   updatedAt: string;
-  reviews: {
-    nodes: Array<{
-      id: string;
-      body: string;
-      state: string;
-      author: {
-        login: string;
-      };
-      comments: {
-        nodes: ReviewCommentNode[];
-      };
-    }>;
-  };
 }
 
 export interface RepositoryQueryResponse {
   repository: {
     pullRequests: {
-      totalCount: number;
-      pageInfo: {
-        endCursor: string;
-        hasNextPage: boolean;
-      };
+      pageInfo: PageInfo;
       nodes: PullRequestNode[];
     };
   };
+}
+
+export interface PullRequestReviewsQueryResponse {
+  node: {
+    id: string;
+    updatedAt: string;
+    reviews: {
+      pageInfo: PageInfo;
+      nodes: ReviewNode[];
+    };
+  } | null;
+}
+
+export interface ReviewCommentsQueryResponse {
+  node: {
+    id: string;
+    pullRequest: {
+      id: string;
+      updatedAt: string;
+    } | null;
+    comments: {
+      pageInfo: PageInfo;
+      nodes: ReviewCommentNode[];
+    };
+  } | null;
 }
 
 /**
