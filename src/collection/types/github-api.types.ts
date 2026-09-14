@@ -62,6 +62,8 @@ export interface RepositoryQueryResponse {
 
 export interface PullRequestReviewsQueryResponse {
   node: {
+    id: string;
+    updatedAt: string;
     reviews: {
       pageInfo: PageInfo;
       nodes: ReviewNode[];
@@ -71,6 +73,11 @@ export interface PullRequestReviewsQueryResponse {
 
 export interface ReviewCommentsQueryResponse {
   node: {
+    id: string;
+    pullRequest: {
+      id: string;
+      updatedAt: string;
+    } | null;
     comments: {
       pageInfo: PageInfo;
       nodes: ReviewCommentNode[];

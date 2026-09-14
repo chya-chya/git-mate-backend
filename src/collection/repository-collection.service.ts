@@ -99,12 +99,24 @@ export class RepositoryCollectionService {
     const pullRequests: PullRequestDto[] = [];
 
     for (const pullRequest of pullRequestNodes) {
+      const provisionalState: CollectionState = {
+        reviewNodes: new Map(),
+        reviewOwners: new Map(),
+        commentNodes: new Map(),
+        commentOwners: new Map(),
+        reviewAndCommentCount: 0,
+      };
       const reviews = await this.collectReviews(
         pullRequest.id,
+        input.collectionCutoff,
         octokit,
         input.onPage,
-        state,
+        provisionalState,
       );
+      if (reviews === null) {
+        continue;
+      }
+      this.mergeCollectionState(state, provisionalState);
       pullRequests.push({
         number: pullRequest.number,
         title: pullRequest.title,
@@ -199,10 +211,11 @@ export class RepositoryCollectionService {
 
   private async collectReviews(
     pullRequestId: string,
+    collectionCutoff: Date,
     octokit: Octokit,
     onPage: (() => Promise<void>) | undefined,
     state: CollectionState,
-  ): Promise<ReviewDto[]> {
+  ): Promise<ReviewDto[] | null> {
     const reviews: ReviewDto[] = [];
     const visitedCursors = new Set<string>();
     let cursor: string | undefined;
@@ -213,9 +226,21 @@ export class RepositoryCollectionService {
         octokit,
         cursor,
       );
-      const connection = response.node?.reviews;
+      const node = response.node;
+      if (!node) {
+        throw new GithubPaginationError('review', 'parent node is missing');
+      }
+      this.assertParentId(node.id, pullRequestId, 'review');
+      const currentUpdatedAt = this.parseGithubDate(
+        node.updatedAt,
+        'pull request updatedAt',
+      );
+      const connection = node.reviews;
       this.assertConnection(connection?.nodes, connection?.pageInfo, 'review');
       await onPage?.();
+      if (currentUpdatedAt.getTime() > collectionCutoff.getTime()) {
+        return null;
+      }
 
       for (const review of connection.nodes) {
         const firstObservation = this.observeOwnedUniqueNode(
@@ -231,10 +256,15 @@ export class RepositoryCollectionService {
         this.incrementNestedNodeCount(state);
         const comments = await this.collectComments(
           review.id,
+          pullRequestId,
+          collectionCutoff,
           octokit,
           onPage,
           state,
         );
+        if (comments === null) {
+          return null;
+        }
         reviews.push({
           author: this.authorLogin(review.author),
           body: review.body,
@@ -258,10 +288,12 @@ export class RepositoryCollectionService {
 
   private async collectComments(
     reviewId: string,
+    pullRequestId: string,
+    collectionCutoff: Date,
     octokit: Octokit,
     onPage: (() => Promise<void>) | undefined,
     state: CollectionState,
-  ): Promise<ReviewCommentDto[]> {
+  ): Promise<ReviewCommentDto[] | null> {
     const comments: ReviewCommentDto[] = [];
     const visitedCursors = new Set<string>();
     let cursor: string | undefined;
@@ -272,13 +304,35 @@ export class RepositoryCollectionService {
         octokit,
         cursor,
       );
-      const connection = response.node?.comments;
+      const node = response.node;
+      if (!node) {
+        throw new GithubPaginationError(
+          'review comment',
+          'parent node is missing',
+        );
+      }
+      this.assertParentId(node.id, reviewId, 'review comment');
+      if (!node.pullRequest) {
+        throw new GithubPaginationError(
+          'review comment',
+          'owning pull request is missing',
+        );
+      }
+      this.assertParentId(node.pullRequest.id, pullRequestId, 'review comment');
+      const currentUpdatedAt = this.parseGithubDate(
+        node.pullRequest.updatedAt,
+        'pull request updatedAt',
+      );
+      const connection = node.comments;
       this.assertConnection(
         connection?.nodes,
         connection?.pageInfo,
         'review comment',
       );
       await onPage?.();
+      if (currentUpdatedAt.getTime() > collectionCutoff.getTime()) {
+        return null;
+      }
 
       for (const comment of connection.nodes) {
         const firstObservation = this.observeOwnedUniqueNode(
@@ -375,6 +429,77 @@ export class RepositoryCollectionService {
       owners.set(node.id, ownerId);
     }
     return firstObservation;
+  }
+
+  private mergeCollectionState(
+    target: CollectionState,
+    source: CollectionState,
+  ): void {
+    this.mergeOwnedNodes(
+      target,
+      source.reviewNodes,
+      source.reviewOwners,
+      target.reviewNodes,
+      target.reviewOwners,
+      'review',
+    );
+    this.mergeOwnedNodes(
+      target,
+      source.commentNodes,
+      source.commentOwners,
+      target.commentNodes,
+      target.commentOwners,
+      'review comment',
+    );
+  }
+
+  private mergeOwnedNodes(
+    target: CollectionState,
+    sourceNodes: Map<string, string>,
+    sourceOwners: Map<string, string>,
+    targetNodes: Map<string, string>,
+    targetOwners: Map<string, string>,
+    connection: string,
+  ): void {
+    for (const [nodeId, serialized] of sourceNodes) {
+      const ownerId = sourceOwners.get(nodeId);
+      if (ownerId === undefined) {
+        throw new GithubPaginationError(connection, 'node owner is missing');
+      }
+      const knownOwner = targetOwners.get(nodeId);
+      if (knownOwner !== undefined && knownOwner !== ownerId) {
+        throw new GithubPaginationError(
+          connection,
+          'a node appeared under multiple parents',
+        );
+      }
+      const previous = targetNodes.get(nodeId);
+      if (previous !== undefined) {
+        if (previous !== serialized) {
+          throw new GithubPaginationError(
+            connection,
+            'a repeated node contains conflicting data',
+          );
+        }
+        continue;
+      }
+      targetNodes.set(nodeId, serialized);
+      targetOwners.set(nodeId, ownerId);
+      this.incrementNestedNodeCount(target);
+    }
+  }
+
+  private assertParentId(
+    actual: unknown,
+    expected: string,
+    connection: string,
+  ): void {
+    if (typeof actual !== 'string' || actual.trim().length === 0) {
+      throw new GithubPaginationError(connection, 'parent node ID is missing');
+    }
+    if (actual !== expected) {
+      throw new GithubPaginationError(connection, 'parent node does not match');
+    }
   }
 
   private observeUniqueNode<T extends { id: string }>(

@@ -46,9 +46,19 @@ describe('GithubProvider', () => {
       { pullRequestId: 'PR_1', cursor: 'review-cursor' },
     );
     expect(graphql).toHaveBeenNthCalledWith(
+      1,
+      expect.stringContaining('updatedAt'),
+      expect.anything(),
+    );
+    expect(graphql).toHaveBeenNthCalledWith(
       2,
       expect.stringContaining('comments(first: 50, after: $cursor)'),
       { reviewId: 'REVIEW_1', cursor: 'comment-cursor' },
+    );
+    expect(graphql).toHaveBeenNthCalledWith(
+      2,
+      expect.stringContaining('pullRequest'),
+      expect.anything(),
     );
   });
 });

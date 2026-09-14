@@ -57,6 +57,8 @@ export class GithubProvider implements IGithubProvider {
       query($pullRequestId: ID!, $cursor: String) {
         node(id: $pullRequestId) {
           ... on PullRequest {
+            id
+            updatedAt
             reviews(first: 50, after: $cursor) {
               nodes {
                 id
@@ -83,6 +85,11 @@ export class GithubProvider implements IGithubProvider {
       query($reviewId: ID!, $cursor: String) {
         node(id: $reviewId) {
           ... on PullRequestReview {
+            id
+            pullRequest {
+              id
+              updatedAt
+            }
             comments(first: 50, after: $cursor) {
               nodes {
                 id

@@ -43,8 +43,13 @@ describe('RepositoryCollectionService', () => {
       ) => operation({} as Octokit),
     );
     githubProvider.fetchPullRequests.mockResolvedValue(prPage([]));
-    githubProvider.fetchPullRequestReviews.mockResolvedValue(reviewPage([]));
-    githubProvider.fetchReviewComments.mockResolvedValue(commentPage([]));
+    githubProvider.fetchPullRequestReviews.mockImplementation(
+      (pullRequestId: string) =>
+        Promise.resolve(reviewPage([], false, null, pullRequestId)),
+    );
+    githubProvider.fetchReviewComments.mockImplementation((reviewId: string) =>
+      Promise.resolve(commentPage([], false, null, reviewId)),
+    );
   });
 
   it('collects every PR cursor page and passes each previous endCursor', async () => {
@@ -113,6 +118,99 @@ describe('RepositoryCollectionService', () => {
     ).resolves.toMatchObject({ pullRequests: [{ number: 9 }] });
   });
 
+  it('discards a provisional PR when a later review page crosses the cutoff', async () => {
+    const beforeCutoff = '2026-08-25T01:00:00.000Z';
+    const afterCutoff = '2026-08-26T00:00:00.001Z';
+    githubProvider.fetchPullRequests
+      .mockResolvedValueOnce(prPage([pullRequest('PR_MOVED', 1, beforeCutoff)]))
+      .mockResolvedValueOnce(prPage([pullRequest('PR_MOVED', 1, afterCutoff)]));
+    githubProvider.fetchPullRequestReviews
+      .mockResolvedValueOnce(
+        reviewPage(
+          [review('REVIEW_1')],
+          true,
+          'review-next',
+          'PR_MOVED',
+          beforeCutoff,
+        ),
+      )
+      .mockResolvedValueOnce(
+        reviewPage([], false, null, 'PR_MOVED', afterCutoff),
+      )
+      .mockResolvedValueOnce(
+        reviewPage([review('REVIEW_1')], false, null, 'PR_MOVED', afterCutoff),
+      );
+    githubProvider.fetchReviewComments
+      .mockResolvedValueOnce(
+        commentPage([], false, null, 'REVIEW_1', 'PR_MOVED', beforeCutoff),
+      )
+      .mockResolvedValueOnce(
+        commentPage([], false, null, 'REVIEW_1', 'PR_MOVED', afterCutoff),
+      );
+
+    await expect(collect()).resolves.toMatchObject({ pullRequests: [] });
+    await expect(
+      collect({
+        sourceCursor: collectionCutoff,
+        collectionCutoff: new Date('2026-08-27T00:00:00.000Z'),
+      }),
+    ).resolves.toMatchObject({
+      pullRequests: [{ number: 1, reviews: [{ body: 'Substantive review' }] }],
+    });
+  });
+
+  it('discards comment-detected provisional nodes without consuming the global limit', async () => {
+    githubProvider.fetchPullRequests.mockResolvedValue(
+      prPage([pullRequest('PR_MOVED', 1), pullRequest('PR_STABLE', 2)]),
+    );
+    githubProvider.fetchPullRequestReviews.mockImplementation(
+      (pullRequestId: string) =>
+        Promise.resolve(
+          reviewPage(
+            [review(`${pullRequestId}_REVIEW`)],
+            false,
+            null,
+            pullRequestId,
+          ),
+        ),
+    );
+    githubProvider.fetchReviewComments.mockImplementation(
+      (reviewId: string) => {
+        if (reviewId === 'PR_MOVED_REVIEW') {
+          return Promise.resolve(
+            commentPage(
+              [comment('POST_CUTOFF_COMMENT')],
+              false,
+              null,
+              reviewId,
+              'PR_MOVED',
+              '2026-08-26T00:00:00.001Z',
+            ),
+          );
+        }
+        return Promise.resolve(
+          commentPage(
+            Array.from(
+              { length: COLLECTION_LIMITS.reviewAndCommentNodes - 1 },
+              (_, index) => comment(`STABLE_COMMENT_${index}`),
+            ),
+            false,
+            null,
+            reviewId,
+            'PR_STABLE',
+          ),
+        );
+      },
+    );
+
+    const result = await collect();
+
+    expect(result.pullRequests.map(({ number }) => number)).toEqual([2]);
+    expect(result.pullRequests[0].reviews[0].comments).toHaveLength(
+      COLLECTION_LIMITS.reviewAndCommentNodes - 1,
+    );
+  });
+
   it('restarts the same collection window from scratch after a 401 refresh', async () => {
     const firstOctokit = { attempt: 1 } as unknown as Octokit;
     const secondOctokit = { attempt: 2 } as unknown as Octokit;
@@ -170,12 +268,14 @@ describe('RepositoryCollectionService', () => {
     githubProvider.fetchReviewComments.mockImplementation(
       (reviewId: string, _octokit: Octokit, cursor?: string) => {
         if (reviewId !== 'REVIEW_1') {
-          return Promise.resolve(commentPage([]));
+          return Promise.resolve(
+            commentPage([], false, null, reviewId, 'PR_1'),
+          );
         }
         return Promise.resolve(
           cursor === undefined
-            ? commentPage(comments.slice(0, 50), true, 'c-50')
-            : commentPage(comments.slice(50)),
+            ? commentPage(comments.slice(0, 50), true, 'c-50', reviewId, 'PR_1')
+            : commentPage(comments.slice(50), false, null, reviewId, 'PR_1'),
         );
       },
     );
@@ -209,21 +309,37 @@ describe('RepositoryCollectionService', () => {
                 [review(`${pullRequestId}_REVIEW_1`)],
                 true,
                 `${pullRequestId}_CURSOR`,
+                pullRequestId,
               )
-            : reviewPage([review(`${pullRequestId}_REVIEW_2`)]),
+            : reviewPage(
+                [review(`${pullRequestId}_REVIEW_2`)],
+                false,
+                null,
+                pullRequestId,
+              ),
         ),
     );
     githubProvider.fetchReviewComments.mockImplementation(
-      (reviewId: string, _octokit: Octokit, cursor?: string) =>
-        Promise.resolve(
+      (reviewId: string, _octokit: Octokit, cursor?: string) => {
+        const pullRequestId = reviewId.split('_REVIEW_')[0];
+        return Promise.resolve(
           cursor === undefined
             ? commentPage(
                 [comment(`${reviewId}_COMMENT_1`)],
                 true,
                 `${reviewId}_CURSOR`,
+                reviewId,
+                pullRequestId,
               )
-            : commentPage([comment(`${reviewId}_COMMENT_2`)]),
-        ),
+            : commentPage(
+                [comment(`${reviewId}_COMMENT_2`)],
+                false,
+                null,
+                reviewId,
+                pullRequestId,
+              ),
+        );
+      },
     );
 
     await collect();
@@ -315,6 +431,73 @@ describe('RepositoryCollectionService', () => {
   it('fails with a typed error for an invalid GitHub date', async () => {
     githubProvider.fetchPullRequests.mockResolvedValue(
       prPage([pullRequest('PR_1', 1, 'not-a-date')]),
+    );
+
+    await expect(collect()).rejects.toBeInstanceOf(InvalidGithubDateError);
+  });
+
+  it.each([
+    ['missing', { node: null }],
+    ['mismatched', reviewPage([], false, null, 'OTHER_PR')],
+  ])('fails with a typed error for a %s review parent', async (_case, page) => {
+    githubProvider.fetchPullRequests.mockResolvedValue(
+      prPage([pullRequest('PR_1', 1)]),
+    );
+    githubProvider.fetchPullRequestReviews.mockResolvedValue(page);
+
+    await expect(collect()).rejects.toBeInstanceOf(GithubPaginationError);
+  });
+
+  it.each([
+    [
+      'null',
+      {
+        node: {
+          id: 'REVIEW_1',
+          pullRequest: null,
+          comments: {
+            nodes: [],
+            pageInfo: { hasNextPage: false, endCursor: null },
+          },
+        },
+      },
+    ],
+    ['mismatched', commentPage([], false, null, 'REVIEW_1', 'OTHER_PR')],
+  ])(
+    'fails with a typed error for a %s comment pull request',
+    async (_case, page) => {
+      githubProvider.fetchPullRequests.mockResolvedValue(
+        prPage([pullRequest('PR_1', 1)]),
+      );
+      githubProvider.fetchPullRequestReviews.mockResolvedValue(
+        reviewPage([review('REVIEW_1')]),
+      );
+      githubProvider.fetchReviewComments.mockResolvedValue(page);
+
+      await expect(collect()).rejects.toBeInstanceOf(GithubPaginationError);
+    },
+  );
+
+  it('fails with a typed error for an invalid nested pull request date', async () => {
+    githubProvider.fetchPullRequests.mockResolvedValue(
+      prPage([pullRequest('PR_1', 1)]),
+    );
+    githubProvider.fetchPullRequestReviews.mockResolvedValue(
+      reviewPage([], false, null, 'PR_1', 'not-a-date'),
+    );
+
+    await expect(collect()).rejects.toBeInstanceOf(InvalidGithubDateError);
+  });
+
+  it('fails with a typed error for an invalid comment owner date', async () => {
+    githubProvider.fetchPullRequests.mockResolvedValue(
+      prPage([pullRequest('PR_1', 1)]),
+    );
+    githubProvider.fetchPullRequestReviews.mockResolvedValue(
+      reviewPage([review('REVIEW_1')]),
+    );
+    githubProvider.fetchReviewComments.mockResolvedValue(
+      commentPage([], false, null, 'REVIEW_1', 'PR_1', 'not-a-date'),
     );
 
     await expect(collect()).rejects.toBeInstanceOf(InvalidGithubDateError);
@@ -472,9 +655,15 @@ describe('RepositoryCollectionService', () => {
     nodes: ReviewNode[],
     hasNextPage = false,
     endCursor: string | null = null,
+    pullRequestId = 'PR_1',
+    updatedAt = '2026-08-25T01:00:00.000Z',
   ) {
     return {
-      node: { reviews: { nodes, pageInfo: { hasNextPage, endCursor } } },
+      node: {
+        id: pullRequestId,
+        updatedAt,
+        reviews: { nodes, pageInfo: { hasNextPage, endCursor } },
+      },
     };
   }
 
@@ -482,9 +671,16 @@ describe('RepositoryCollectionService', () => {
     nodes: ReviewCommentNode[],
     hasNextPage = false,
     endCursor: string | null = null,
+    reviewId = 'REVIEW_1',
+    pullRequestId = 'PR_1',
+    pullRequestUpdatedAt = '2026-08-25T01:00:00.000Z',
   ) {
     return {
-      node: { comments: { nodes, pageInfo: { hasNextPage, endCursor } } },
+      node: {
+        id: reviewId,
+        pullRequest: { id: pullRequestId, updatedAt: pullRequestUpdatedAt },
+        comments: { nodes, pageInfo: { hasNextPage, endCursor } },
+      },
     };
   }
 });
