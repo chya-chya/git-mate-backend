@@ -121,15 +121,17 @@ describe('AnalysisJobApiService', () => {
         idempotencyKey: string;
         requestHash: string;
         sourceCursor: Date | null;
-        collectionCutoff: Date;
+        collectionCutoff?: Date;
       }) => {
+        const createdAt = new Date('2026-08-16T00:00:00.000Z');
         storedJob = createJob({
           userId: input.userId,
           repositoryId: input.repositoryId,
           idempotencyKey: input.idempotencyKey,
           requestHash: input.requestHash,
           sourceCursor: input.sourceCursor,
-          collectionCutoff: input.collectionCutoff,
+          collectionCutoff: input.collectionCutoff ?? createdAt,
+          createdAt,
           repository: {
             id: input.repositoryId,
             githubRepoId: input.repositoryId === 18 ? '987654321' : '123456789',
@@ -223,19 +225,11 @@ describe('AnalysisJobApiService', () => {
     );
   });
 
-  it('assigns a durable cutoff when a new Job is accepted', async () => {
-    const beforeAcceptance = Date.now();
-
+  it('lets the database assign the cutoff when a new Job is accepted', async () => {
     await service.create(7, '123456789', 'request-1');
 
-    const input = repository.create.mock.calls[0][0] as {
-      collectionCutoff: Date;
-    };
-    expect(input.collectionCutoff).toBeInstanceOf(Date);
-    expect(input.collectionCutoff.getTime()).toBeGreaterThanOrEqual(
-      beforeAcceptance,
-    );
-    expect(input.collectionCutoff.getTime()).toBeLessThanOrEqual(Date.now());
+    const input = repository.create.mock.calls[0][0] as Record<string, unknown>;
+    expect(input).not.toHaveProperty('collectionCutoff');
   });
 
   it('returns the post-creation rate-limit status', async () => {

@@ -405,6 +405,28 @@ describeDatabase('AnalysisJob PostgreSQL invariants', () => {
     ).resolves.toBe(1);
   });
 
+  it('uses one database timestamp for an initial API Job window', async () => {
+    const repository = await prisma.repository.create({
+      data: {
+        githubRepoId: 'integration-api-collection-cutoff',
+        fullName: 'owner/api-collection-cutoff',
+        ownerId: userId,
+      },
+    });
+
+    const accepted = await analysisJobApiService.create(
+      userId,
+      repository.githubRepoId,
+      'integration-api-collection-cutoff',
+    );
+    const job = await prisma.analysisJob.findUniqueOrThrow({
+      where: { id: accepted.job.jobId },
+      select: { collectionCutoff: true, createdAt: true },
+    });
+
+    expect(job.collectionCutoff).toEqual(job.createdAt);
+  });
+
   it('allows only one active Job for concurrent repository requests with different keys', async () => {
     const repository = await prisma.repository.create({
       data: {
