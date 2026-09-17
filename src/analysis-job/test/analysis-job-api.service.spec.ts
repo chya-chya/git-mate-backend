@@ -53,6 +53,7 @@ function createJob(
     idempotencyKey: 'request-1',
     requestHash: 'a'.repeat(64),
     sourceCursor: null,
+    collectionCutoff: new Date('2026-08-16T00:00:00.000Z'),
     modelVersion: 'gpt-5-mini',
     promptVersion: 'analysis-v1',
     estimatedTokens: null,
@@ -119,12 +120,16 @@ describe('AnalysisJobApiService', () => {
         repositoryId: number;
         idempotencyKey: string;
         requestHash: string;
+        sourceCursor: Date | null;
+        collectionCutoff: Date;
       }) => {
         storedJob = createJob({
           userId: input.userId,
           repositoryId: input.repositoryId,
           idempotencyKey: input.idempotencyKey,
           requestHash: input.requestHash,
+          sourceCursor: input.sourceCursor,
+          collectionCutoff: input.collectionCutoff,
           repository: {
             id: input.repositoryId,
             githubRepoId: input.repositoryId === 18 ? '987654321' : '123456789',
@@ -216,6 +221,21 @@ describe('AnalysisJobApiService', () => {
       expect.objectContaining({ requestHash: expectedHash }),
       database,
     );
+  });
+
+  it('assigns a durable cutoff when a new Job is accepted', async () => {
+    const beforeAcceptance = Date.now();
+
+    await service.create(7, '123456789', 'request-1');
+
+    const input = repository.create.mock.calls[0][0] as {
+      collectionCutoff: Date;
+    };
+    expect(input.collectionCutoff).toBeInstanceOf(Date);
+    expect(input.collectionCutoff.getTime()).toBeGreaterThanOrEqual(
+      beforeAcceptance,
+    );
+    expect(input.collectionCutoff.getTime()).toBeLessThanOrEqual(Date.now());
   });
 
   it('returns the post-creation rate-limit status', async () => {
@@ -343,6 +363,8 @@ describe('AnalysisJobApiService', () => {
   });
 
   it('creates a retry as a new Job without mutating the source', async () => {
+    const sourceCursor = new Date('2026-08-15T23:00:00.000Z');
+    const collectionCutoff = new Date('2026-08-16T00:00:00.000Z');
     const source = createJob({
       id: FIRST_JOB_ID,
       status: AnalysisJobStatus.FAILED,
@@ -350,14 +372,23 @@ describe('AnalysisJobApiService', () => {
       errorRetryable: true,
       lastErrorCode: 'ANALYSIS_FAILED',
       completedAt: new Date('2026-08-16T00:01:00.000Z'),
+      sourceCursor,
+      collectionCutoff,
     });
     repository.findOwnedById.mockResolvedValue(source);
     repository.create.mockImplementationOnce(
-      (input: { idempotencyKey: string; requestHash: string }) => {
+      (input: {
+        idempotencyKey: string;
+        requestHash: string;
+        sourceCursor: Date | null;
+        collectionCutoff: Date;
+      }) => {
         storedJob = createJob({
           id: RETRY_JOB_ID,
           idempotencyKey: input.idempotencyKey,
           requestHash: input.requestHash,
+          sourceCursor: input.sourceCursor,
+          collectionCutoff: input.collectionCutoff,
         });
         return Promise.resolve(storedJob);
       },
@@ -372,6 +403,8 @@ describe('AnalysisJobApiService', () => {
         userId: 7,
         repositoryId: 17,
         idempotencyKey: 'retry-1',
+        sourceCursor,
+        collectionCutoff,
       }),
       database,
     );

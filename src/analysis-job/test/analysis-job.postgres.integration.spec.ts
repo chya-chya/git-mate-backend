@@ -134,6 +134,14 @@ describeDatabase('AnalysisJob PostgreSQL invariants', () => {
     );
     await pool.query(ledgerMigration);
 
+    const collectionCutoffMigration = readFileSync(
+      resolve(
+        'prisma/migrations/20260917000000_add_analysis_job_collection_cutoff/migration.sql',
+      ),
+      'utf8',
+    );
+    await pool.query(collectionCutoffMigration);
+
     prismaPool = new Pool({ connectionString: databaseUrl });
     prisma = new PrismaClient({ adapter: new PrismaPg(prismaPool) });
     await prisma.$connect();
@@ -178,7 +186,9 @@ describeDatabase('AnalysisJob PostgreSQL invariants', () => {
         (report) =>
           report.job?.modelVersion === 'legacy' &&
           report.job.promptVersion === 'legacy' &&
-          report.job.totalTokens === null,
+          report.job.totalTokens === null &&
+          report.job.collectionCutoff.getTime() ===
+            report.job.createdAt.getTime(),
       ),
     ).toBe(true);
     expect(stat.analysisCount).toBe(2);
@@ -986,6 +996,7 @@ describeDatabase('AnalysisJob PostgreSQL invariants', () => {
       },
     });
     const createdAt = new Date('2026-08-25T11:00:00.000Z');
+    const collectionCutoff = new Date('2026-08-25T10:55:00.000Z');
     const job = await prisma.analysisJob.create({
       data: {
         userId: user.id,
@@ -993,6 +1004,7 @@ describeDatabase('AnalysisJob PostgreSQL invariants', () => {
         idempotencyKey: 'worker-idempotency',
         requestHash: 'f'.repeat(64),
         sourceCursor: repository.lastSyncTime,
+        collectionCutoff,
         createdAt,
       },
     });
@@ -1051,6 +1063,12 @@ describeDatabase('AnalysisJob PostgreSQL invariants', () => {
 
     expect(analyze).toHaveBeenCalledTimes(1);
     expect(collection.collect).toHaveBeenCalledTimes(1);
+    expect(collection.collect).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceCursor: repository.lastSyncTime,
+        collectionCutoff,
+      }),
+    );
     await expect(
       prisma.analysisReport.count({ where: { jobId: job.id } }),
     ).resolves.toBe(1);
@@ -1074,7 +1092,7 @@ describeDatabase('AnalysisJob PostgreSQL invariants', () => {
     expect(completedJob.tokensSettledAt).toBeInstanceOf(Date);
     await expect(
       prisma.repository.findUniqueOrThrow({ where: { id: repository.id } }),
-    ).resolves.toMatchObject({ lastSyncTime: createdAt });
+    ).resolves.toMatchObject({ lastSyncTime: collectionCutoff });
   });
 
   it('keeps lastSyncTime monotonic when an older sync finishes last', async () => {

@@ -213,6 +213,12 @@ export class AnalysisJobApiService {
           );
         }
 
+        const collectionCutoff =
+          request.type === 'RETRY' ? retrySource?.collectionCutoff : new Date();
+        if (!collectionCutoff) {
+          throw this.notFound('JOB_NOT_FOUND', 'Analysis job was not found.');
+        }
+
         const record = await this.creationRepository.createExclusive(
           repository.id,
           (creationDatabase) =>
@@ -226,6 +232,7 @@ export class AnalysisJobApiService {
                   request.type === 'RETRY'
                     ? (retrySource?.sourceCursor ?? null)
                     : repository.lastSyncTime,
+                collectionCutoff,
                 ...CURRENT_ANALYSIS_EXECUTION_VERSION,
               },
               creationDatabase,

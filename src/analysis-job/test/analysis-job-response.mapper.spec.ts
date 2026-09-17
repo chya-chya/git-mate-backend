@@ -15,6 +15,7 @@ function createRecord(
     idempotencyKey: 'legacy-report:1',
     requestHash: 'a'.repeat(64),
     sourceCursor: null,
+    collectionCutoff: new Date('2026-08-16T00:00:00.000Z'),
     modelVersion: 'legacy',
     promptVersion: 'legacy',
     estimatedTokens: null,

@@ -9,9 +9,9 @@ sourceCursor < pullRequest.updatedAt <= collectionCutoff
 ```
 
 - `sourceCursor`는 마지막으로 성공한 repository의 `lastSyncTime`입니다. 최초 분석에는 없습니다.
-- 비동기 Worker의 `collectionCutoff`은 Job이 처음 만들어진 `createdAt`입니다.
+- 비동기 Worker의 `collectionCutoff`은 Job 승인 시 별도 필드에 고정해 저장합니다. `createdAt`은 실제 Job 생성 시각으로만 사용합니다.
 - 동기 sync의 `collectionCutoff`은 GitHub 호출 전에 기록한 `syncStartedAt`입니다.
-- retry는 새 시각을 만들지 않고 원래 Job의 `sourceCursor`와 `createdAt`을 다시 사용합니다.
+- POST retry는 새 시각을 만들지 않고 원래 Job의 `sourceCursor`와 `collectionCutoff`을 복사합니다. 연쇄 retry도 최초 수집 구간을 유지합니다.
 
 GitHub PR 연결은 `UPDATED_AT DESC`이므로 `sourceCursor` 이하의 PR을 만나면 더 오래된 페이지는 조회하지 않습니다. 반대로 cutoff보다 최신인 PR만 있는 페이지는 종료 조건이 아닙니다. cutoff 이하의 PR이 있는 뒤 페이지까지 계속 조회합니다. GitHub가 잘못된 날짜를 반환하면 해당 PR을 건너뛰지 않고 작업 전체를 실패시킵니다.
 

@@ -70,6 +70,7 @@ export interface CreateAnalysisJobInput {
   repositoryId: number;
   idempotencyKey: string;
   sourceCursor?: Date | null;
+  collectionCutoff?: Date;
 }
 
 interface TokenSettlementInput {
@@ -205,6 +206,7 @@ export class AnalysisJobService {
 
     const versionedInput = {
       ...input,
+      collectionCutoff: input.collectionCutoff ?? new Date(),
       ...CURRENT_ANALYSIS_EXECUTION_VERSION,
     };
 
@@ -370,6 +372,9 @@ export class AnalysisJobService {
     }
     if (input.sourceCursor != null) {
       this.assertValidDate(input.sourceCursor, 'sourceCursor');
+    }
+    if (input.collectionCutoff != null) {
+      this.assertValidDate(input.collectionCutoff, 'collectionCutoff');
     }
   }
 

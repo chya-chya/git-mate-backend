@@ -167,7 +167,7 @@ export class AnalysisWorkerService {
         fullName: job.repository.fullName,
         targetUser: job.repository.owner.username,
         sourceCursor: job.sourceCursor ?? undefined,
-        collectionCutoff: job.createdAt,
+        collectionCutoff: job.collectionCutoff,
         onPage: this.collectionHeartbeat(job.id, leaseToken),
       });
       await this.updateProgress(

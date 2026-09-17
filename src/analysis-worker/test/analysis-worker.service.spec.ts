@@ -180,7 +180,7 @@ describe('AnalysisWorkerService', () => {
       fullName: 'owner/repo',
       targetUser: 'developer',
       sourceCursor: job.sourceCursor,
-      collectionCutoff: job.createdAt,
+      collectionCutoff: job.collectionCutoff,
     });
     expect(typeof collectionInput.onPage).toBe('function');
     expect(repository.updateProgress.mock.calls).toEqual([
@@ -453,6 +453,7 @@ describe('AnalysisWorkerService', () => {
       userId: 7,
       repositoryId: 9,
       sourceCursor: new Date('2026-08-20T00:00:00.000Z'),
+      collectionCutoff: new Date('2026-08-25T23:55:00.000Z'),
       reservedTokens: null,
       promptTokens: null,
       completionTokens: null,
