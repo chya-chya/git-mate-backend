@@ -55,6 +55,7 @@ export class CollectionService implements ICollectionService {
       fullName: repository.fullName,
       targetUser: repository.owner.username,
       sourceCursor: repository.lastSyncTime ?? undefined,
+      collectionCutoff: syncStartedAt,
     });
 
     // 🚀 Trigger Analysis (Await so Lambda doesn't exit early)
@@ -110,12 +111,14 @@ export class CollectionService implements ICollectionService {
       );
     }
 
+    const collectionCutoff = new Date();
     const collectedData = await this.repositoryCollection.collect({
       userId,
       githubRepoId,
       fullName: repository.fullName,
       targetUser: repository.owner.username,
       sourceCursor: repository.lastSyncTime ?? undefined,
+      collectionCutoff,
     });
 
     const rawPrCount = collectedData.pullRequests.length;

@@ -10,6 +10,7 @@ const analysisWorkerJobSelect = {
   userId: true,
   repositoryId: true,
   sourceCursor: true,
+  collectionCutoff: true,
   reservedTokens: true,
   promptTokens: true,
   completionTokens: true,
@@ -284,16 +285,22 @@ export class AnalysisWorkerRepository {
   }
 
   advanceRepositoryCheckpoint(
-    job: Pick<AnalysisWorkerJob, 'repositoryId' | 'userId' | 'createdAt'>,
+    job: Pick<
+      AnalysisWorkerJob,
+      'repositoryId' | 'userId' | 'collectionCutoff'
+    >,
     database: AnalysisWorkerCompletionDatabase,
   ) {
     return database.repository.updateMany({
       where: {
         id: job.repositoryId,
         ownerId: job.userId,
-        OR: [{ lastSyncTime: null }, { lastSyncTime: { lt: job.createdAt } }],
+        OR: [
+          { lastSyncTime: null },
+          { lastSyncTime: { lt: job.collectionCutoff } },
+        ],
       },
-      data: { lastSyncTime: job.createdAt },
+      data: { lastSyncTime: job.collectionCutoff },
     });
   }
 

@@ -12,9 +12,9 @@ if [ -f .env ]; then
 fi
 
 # Check required variables
-REQUIRED_VARS=("AWS_ACCOUNT_ID" "AWS_REGION" "AWS_ECR_IMAGE_NAME" "AWS_LAMBDA_FUNCTION_NAME")
+REQUIRED_VARS=("DATABASE_URL" "AWS_ACCOUNT_ID" "AWS_REGION" "AWS_ECR_IMAGE_NAME" "AWS_LAMBDA_FUNCTION_NAME")
 for var in "${REQUIRED_VARS[@]}"; do
-  if [ -z "${!var}" ]; then
+  if [ -z "${!var:-}" ]; then
     echo "Error: $var is not set in .env"
     exit 1
   fi
@@ -78,6 +78,9 @@ docker tag "${AWS_ECR_IMAGE_NAME}:${IMAGE_TAG}" "$IMAGE_URI"
 
 echo "Pushing image to ECR..."
 docker push "$IMAGE_URI"
+
+echo "Applying database migrations..."
+npx prisma migrate deploy
 
 echo "Updating Lambda function code..."
 aws lambda update-function-code \

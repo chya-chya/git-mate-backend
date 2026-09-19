@@ -16,6 +16,7 @@ export interface CreateAnalysisJobApiRecordInput {
   idempotencyKey: string;
   requestHash: string;
   sourceCursor: Date | null;
+  collectionCutoff?: Date;
   modelVersion: string;
   promptVersion: string;
 }
