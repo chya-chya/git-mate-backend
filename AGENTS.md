@@ -52,7 +52,7 @@
 ## 11. Deployment (AWS Lambda)
 - **배포 스크립트:** `./scripts/deploy_lambda.sh`
 - **배포 설정:** 보안 및 관리 편의성을 위해 다음 항목을 `.env` 파일에서 관리합니다.
-  - `AWS_ACCOUNT_ID`, `AWS_REGION`, `AWS_ECR_IMAGE_NAME`, `AWS_LAMBDA_FUNCTION_NAME`
+  - `DATABASE_URL`, `AWS_ACCOUNT_ID`, `AWS_REGION`, `AWS_ECR_IMAGE_NAME`, `AWS_LAMBDA_FUNCTION_NAME`
 - **실행 방법:**
   ```bash
   # 배포 실행
@@ -60,3 +60,4 @@
   ```
 - **핵심 설정 (스크립트 내부):**
   - `--platform linux/amd64` (Lambda 호환성) / `--provenance=false` (매니페스트 호환성)
+  - 이미지 푸시 후 `npx prisma migrate deploy`를 실행하고, 성공한 경우에만 Lambda 코드를 교체합니다.

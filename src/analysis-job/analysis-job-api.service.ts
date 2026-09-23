@@ -213,6 +213,22 @@ export class AnalysisJobApiService {
           );
         }
 
+        let collectionWindow: {
+          sourceCursor: Date | null;
+          collectionCutoff?: Date;
+        };
+        if (request.type === 'RETRY') {
+          if (!retrySource) {
+            throw this.notFound('JOB_NOT_FOUND', 'Analysis job was not found.');
+          }
+          collectionWindow = {
+            sourceCursor: retrySource.sourceCursor,
+            collectionCutoff: retrySource.collectionCutoff,
+          };
+        } else {
+          collectionWindow = { sourceCursor: repository.lastSyncTime };
+        }
+
         const record = await this.creationRepository.createExclusive(
           repository.id,
           (creationDatabase) =>
@@ -222,10 +238,7 @@ export class AnalysisJobApiService {
                 repositoryId: repository.id,
                 idempotencyKey,
                 requestHash,
-                sourceCursor:
-                  request.type === 'RETRY'
-                    ? (retrySource?.sourceCursor ?? null)
-                    : repository.lastSyncTime,
+                ...collectionWindow,
                 ...CURRENT_ANALYSIS_EXECUTION_VERSION,
               },
               creationDatabase,

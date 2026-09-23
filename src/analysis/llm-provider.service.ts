@@ -4,6 +4,10 @@ import OpenAI from 'openai';
 import { getEncoding } from 'js-tiktoken';
 import { CollectedDataDto } from '../collection/types/github-api.types';
 import {
+  COLLECTION_LIMITS,
+  InputLimitExceededError,
+} from '../collection/collection-limits';
+import {
   AnalysisExecutionVersion,
   CURRENT_ANALYSIS_EXECUTION_VERSION,
   assertSupportedAnalysisExecutionVersion,
@@ -81,6 +85,16 @@ type AnalysisMessage = {
   role: 'system' | 'user';
   content: string;
 };
+
+export function assertAnalysisInputTokenLimit(estimatedTokens: number): void {
+  if (estimatedTokens > COLLECTION_LIMITS.analysisInputTokens) {
+    throw new InputLimitExceededError(
+      'analysis input tokens',
+      COLLECTION_LIMITS.analysisInputTokens,
+      estimatedTokens,
+    );
+  }
+}
 
 @Injectable()
 export class LlmProviderService {
@@ -165,13 +179,7 @@ JSON 이스케이프 규칙을 철저히 준수하세요. 문자열 내에 쌍�
     try {
       const messages = this.buildAnalysisMessages(data, version);
 
-      // 토큰 측정 및 제한 확인 (10만 토큰)
-      const estimatedTokens = this.getEstimatedTokenCount(messages);
-      if (estimatedTokens > 100000) {
-        throw new Error(
-          `Token limit exceeded: ${estimatedTokens} tokens (Limit: 100000)`,
-        );
-      }
+      assertAnalysisInputTokenLimit(this.getEstimatedTokenCount(messages));
 
       const response = await this.openai.chat.completions.create({
         model: version.modelVersion,
@@ -222,8 +230,9 @@ JSON 이스케이프 규칙을 철저히 준수하세요. 문자열 내에 쌍�
     version: AnalysisExecutionVersion = CURRENT_ANALYSIS_EXECUTION_VERSION,
   ): number {
     const messages = this.buildAnalysisMessages(data, version);
-
-    return this.getEstimatedTokenCount(messages);
+    const estimatedTokens = this.getEstimatedTokenCount(messages);
+    assertAnalysisInputTokenLimit(estimatedTokens);
+    return estimatedTokens;
   }
 
   estimateTokenReservationForData(

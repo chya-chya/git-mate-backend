@@ -26,6 +26,7 @@ const DEFAULT_RETRY_BASE_SECONDS = 30;
 const MAX_RETRY_BASE_SECONDS = 15 * 60;
 const MAX_BACKOFF_SECONDS = 60 * 60;
 const JITTER_RATIO = 0.2;
+const MAX_COLLECTION_HEARTBEAT_INTERVAL_MS = 30 * 1000;
 const TRACE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 
 enum AnalysisWorkerRecordOutcome {
@@ -166,6 +167,8 @@ export class AnalysisWorkerService {
         fullName: job.repository.fullName,
         targetUser: job.repository.owner.username,
         sourceCursor: job.sourceCursor ?? undefined,
+        collectionCutoff: job.collectionCutoff,
+        onPage: this.collectionHeartbeat(job.id, leaseToken),
       });
       await this.updateProgress(
         job.id,
@@ -262,7 +265,11 @@ export class AnalysisWorkerService {
         await this.repository.releaseForRetry({
           jobId: job.id,
           leaseToken,
-          nextPublishAt: this.nextBackoffAt(new Date(), job.attemptCount),
+          nextPublishAt: this.nextRetryAt(
+            new Date(),
+            job.attemptCount,
+            classification.retryAt,
+          ),
           errorCode: classification.code,
           errorMessage: classification.message,
         });
@@ -381,6 +388,30 @@ export class AnalysisWorkerService {
     });
   }
 
+  private collectionHeartbeat(
+    jobId: string,
+    leaseToken: string,
+  ): () => Promise<void> {
+    let lastHeartbeatAt = 0;
+    const intervalMs = Math.min(
+      MAX_COLLECTION_HEARTBEAT_INTERVAL_MS,
+      Math.max(1_000, (this.leaseSeconds() * 1_000) / 3),
+    );
+    return async () => {
+      const now = Date.now();
+      if (lastHeartbeatAt !== 0 && now - lastHeartbeatAt < intervalMs) {
+        return;
+      }
+      await this.updateProgress(
+        jobId,
+        leaseToken,
+        AnalysisJobStage.COLLECTING,
+        10,
+      );
+      lastHeartbeatAt = now;
+    };
+  }
+
   private isTerminalOutcome(outcome: AnalysisJobExecutionOutcome): boolean {
     return Object.values(AnalysisJobExecutionOutcome).includes(outcome);
   }
@@ -444,6 +475,17 @@ export class AnalysisWorkerService {
     return new Date(
       now.getTime() + (exponentialSeconds + jitterSeconds) * 1000,
     );
+  }
+
+  private nextRetryAt(
+    now: Date,
+    attempt: number,
+    providerRetryAt?: Date,
+  ): Date {
+    const workerRetryAt = this.nextBackoffAt(now, attempt);
+    return providerRetryAt !== undefined && providerRetryAt > workerRetryAt
+      ? providerRetryAt
+      : workerRetryAt;
   }
 
   private shortLease(leaseToken: string): string {

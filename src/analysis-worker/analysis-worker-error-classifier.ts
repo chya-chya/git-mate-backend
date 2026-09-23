@@ -17,6 +17,12 @@ import { UnsupportedAnalysisExecutionVersionError } from '../analysis/analysis-e
 import { LlmProviderConfigurationError } from '../analysis/llm-provider.service';
 import { StaleAnalysisJobTransitionError } from '../analysis-job/analysis-job.service';
 import { InvalidRepositoryCollectionInputError } from '../collection/repository-collection.service';
+import { InputLimitExceededError } from '../collection/collection-limits';
+import {
+  GithubPaginationError,
+  GithubRateLimitError,
+  InvalidGithubDateError,
+} from '../collection/github-errors';
 import {
   BilledAnalysisJobRequiresReconciliationError,
   StaleAnalysisWorkerLeaseError,
@@ -44,6 +50,9 @@ export enum AnalysisWorkerFailureCode {
   ANALYSIS_FAILED = 'ANALYSIS_FAILED',
   DATABASE_TEMPORARY_FAILURE = 'DATABASE_TEMPORARY_FAILURE',
   GITHUB_TEMPORARY_FAILURE = 'GITHUB_TEMPORARY_FAILURE',
+  GITHUB_PAGINATION_INVALID = 'GITHUB_PAGINATION_INVALID',
+  GITHUB_RESPONSE_INVALID = 'GITHUB_RESPONSE_INVALID',
+  INPUT_LIMIT_EXCEEDED = 'INPUT_LIMIT_EXCEEDED',
   INVALID_MESSAGE = 'INVALID_MESSAGE',
   PROVIDER_CONFIGURATION_ERROR = 'PROVIDER_CONFIGURATION_ERROR',
   PROVIDER_RECONCILIATION_REQUIRED = 'PROVIDER_RECONCILIATION_REQUIRED',
@@ -58,11 +67,41 @@ export interface AnalysisWorkerErrorClassification {
   code: AnalysisWorkerFailureCode;
   message: string;
   retryable: boolean;
+  retryAt?: Date;
 }
 
 @Injectable()
 export class AnalysisWorkerErrorClassifier {
   classify(error: unknown): AnalysisWorkerErrorClassification {
+    if (error instanceof InputLimitExceededError) {
+      return this.permanent(
+        AnalysisWorkerFailureCode.INPUT_LIMIT_EXCEEDED,
+        error.message,
+      );
+    }
+
+    if (error instanceof GithubPaginationError) {
+      return this.permanent(
+        AnalysisWorkerFailureCode.GITHUB_PAGINATION_INVALID,
+        'GitHub pagination data is invalid.',
+      );
+    }
+
+    if (error instanceof InvalidGithubDateError) {
+      return this.permanent(
+        AnalysisWorkerFailureCode.GITHUB_RESPONSE_INVALID,
+        'GitHub returned invalid repository data.',
+      );
+    }
+
+    if (error instanceof GithubRateLimitError) {
+      return {
+        code: AnalysisWorkerFailureCode.GITHUB_TEMPORARY_FAILURE,
+        message: 'GitHub rate limit was exceeded.',
+        retryable: true,
+        retryAt: error.retryAt,
+      };
+    }
     if (
       error instanceof StaleAnalysisWorkerLeaseError ||
       error instanceof StaleAnalysisJobTransitionError
