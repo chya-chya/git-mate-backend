@@ -180,6 +180,33 @@ describe('AnalysisWorkerRepository', () => {
     });
   });
 
+  it('advances the checkpoint monotonically with the durable cutoff', async () => {
+    const collectionCutoff = new Date('2026-08-25T23:55:00.000Z');
+    const repositoryTable = {
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+    };
+    const job = createJob({
+      collectionCutoff,
+      createdAt: new Date('2026-08-26T00:05:00.000Z'),
+    });
+
+    await repository.advanceRepositoryCheckpoint(job, {
+      repository: repositoryTable,
+    });
+
+    expect(repositoryTable.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: job.repositoryId,
+        ownerId: job.userId,
+        OR: [
+          { lastSyncTime: null },
+          { lastSyncTime: { lt: collectionCutoff } },
+        ],
+      },
+      data: { lastSyncTime: collectionCutoff },
+    });
+  });
+
   function createJob(
     overrides: Partial<AnalysisWorkerJob> = {},
   ): AnalysisWorkerJob {
@@ -191,6 +218,7 @@ describe('AnalysisWorkerRepository', () => {
       userId: 7,
       repositoryId: 9,
       sourceCursor: null,
+      collectionCutoff: new Date('2026-08-25T23:55:00.000Z'),
       reservedTokens: null,
       promptTokens: null,
       completionTokens: null,

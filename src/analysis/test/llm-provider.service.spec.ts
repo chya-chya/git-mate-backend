@@ -2,6 +2,7 @@ import { ConfigService } from '@nestjs/config';
 import { getEncoding } from 'js-tiktoken';
 import { LengthFinishReasonError } from 'openai/error';
 import { ZodError } from 'zod';
+import { InputLimitExceededError } from '../../collection/collection-limits';
 import { CollectedDataDto } from '../../collection/types/github-api.types';
 import {
   ANALYSIS_METRIC_KEYS,
@@ -15,6 +16,7 @@ import {
   InvalidLlmProviderResponseError,
   LlmProviderService,
   LlmTokenEstimationError,
+  assertAnalysisInputTokenLimit,
 } from '../llm-provider.service';
 
 jest.mock('js-tiktoken', () => ({
@@ -292,6 +294,13 @@ describe('LlmProviderService structured outputs', () => {
       }),
     ).rejects.toBeInstanceOf(UnsupportedAnalysisExecutionVersionError);
     expect(parse).not.toHaveBeenCalled();
+  });
+
+  it('accepts 80,000 estimated input tokens and rejects 80,001', () => {
+    expect(() => assertAnalysisInputTokenLimit(80_000)).not.toThrow();
+    expect(() => assertAnalysisInputTokenLimit(80_001)).toThrow(
+      InputLimitExceededError,
+    );
   });
 
   function makeResult(): LlmAnalysisResult {

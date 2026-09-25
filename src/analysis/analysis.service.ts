@@ -27,6 +27,7 @@ import {
   AnalysisTokenUsage,
   isValidAnalysisTokenUsage,
 } from './analysis-billing-metadata';
+import { InputLimitExceededError } from '../collection/collection-limits';
 
 export interface AnalysisJobExecutionContext {
   jobId: string;
@@ -57,6 +58,7 @@ export enum AnalysisJobExecutionOutcome {
   SUCCEEDED = 'SUCCEEDED',
   ANALYSIS_FAILED = 'ANALYSIS_FAILED',
   INSUFFICIENT_TOKENS = 'INSUFFICIENT_TOKENS',
+  INPUT_LIMIT_EXCEEDED = 'INPUT_LIMIT_EXCEEDED',
   NO_ANALYZABLE_DATA = 'NO_ANALYZABLE_DATA',
   RECONCILIATION_REQUIRED = 'RECONCILIATION_REQUIRED',
   TOKEN_BUDGET_EXCEEDED = 'TOKEN_BUDGET_EXCEEDED',
@@ -74,6 +76,7 @@ export type AnalysisJobExecutionResult =
       outcome:
         | AnalysisJobExecutionOutcome.ANALYSIS_FAILED
         | AnalysisJobExecutionOutcome.INSUFFICIENT_TOKENS
+        | AnalysisJobExecutionOutcome.INPUT_LIMIT_EXCEEDED
         | AnalysisJobExecutionOutcome.RECONCILIATION_REQUIRED
         | AnalysisJobExecutionOutcome.TOKEN_BUDGET_EXCEEDED;
       error: Error;
@@ -336,10 +339,29 @@ export class AnalysisJobRunnerService {
       // 2. Preprocess Data
       const preprocessedData = this.preprocessor.preprocess(refinedData);
 
-      const reservation = this.llmProvider.estimateTokenReservationForData(
-        preprocessedData,
-        jobContext,
-      );
+      let reservation: { estimatedTokens: number; reservedTokens: number };
+      try {
+        reservation = this.llmProvider.estimateTokenReservationForData(
+          preprocessedData,
+          jobContext,
+        );
+      } catch (error) {
+        if (error instanceof InputLimitExceededError) {
+          await this.terminateWorkerJob(
+            userId,
+            repositoryId,
+            jobContext,
+            AnalysisJobFailureCode.INPUT_LIMIT_EXCEEDED,
+            ZERO_TOKEN_USAGE,
+            jobContext.reservedTokens ?? 0,
+          );
+          return {
+            outcome: AnalysisJobExecutionOutcome.INPUT_LIMIT_EXCEEDED,
+            error,
+          };
+        }
+        throw error;
+      }
       let reservedTokens: number;
       try {
         reservedTokens = await this.ensureWorkerTokenReservation(

@@ -18,6 +18,7 @@ import {
   CURRENT_ANALYSIS_EXECUTION_VERSION,
   UnsupportedAnalysisExecutionVersionError,
 } from '../analysis-execution-version';
+import { InputLimitExceededError } from '../../collection/collection-limits';
 
 describe('AnalysisJobRunnerService', () => {
   const metrics = {
@@ -41,6 +42,7 @@ describe('AnalysisJobRunnerService', () => {
     };
     analyzeError?: Error;
     executionVersion?: { modelVersion: string; promptVersion: string };
+    estimationError?: Error;
     providerCheckpoint?: {
       providerRequestId: string;
       promptTokens: number | null;
@@ -93,11 +95,17 @@ describe('AnalysisJobRunnerService', () => {
             totalTokens: 15,
           },
         });
+    const estimationError = options?.estimationError;
+    const estimateTokenReservationForData = estimationError
+      ? jest.fn().mockImplementation(() => {
+          throw estimationError;
+        })
+      : jest.fn().mockReturnValue({
+          estimatedTokens: 10,
+          reservedTokens: 20,
+        });
     const llmProvider = {
-      estimateTokenReservationForData: jest.fn().mockReturnValue({
-        estimatedTokens: 10,
-        reservedTokens: 20,
-      }),
+      estimateTokenReservationForData,
       analyze,
     };
     const calculator = { calculate: jest.fn().mockReturnValue(metrics) };
@@ -309,6 +317,48 @@ describe('AnalysisJobRunnerService', () => {
     expect(checkpointCall).toBeLessThan(reportCall);
     expect(reportCall).toBeLessThan(refundCall);
     expect(refundCall).toBeLessThan(casCall);
+  });
+
+  it('terminalizes an oversized prompt before reservation, provider, report, or checkpoint', async () => {
+    const inputError = new InputLimitExceededError(
+      'analysis input tokens',
+      80_000,
+      80_001,
+    );
+    const {
+      analysisJobService,
+      llmProvider,
+      service,
+      statService,
+      transaction,
+    } = createFixture({ estimationError: inputError });
+    const completionAction = jest.fn();
+
+    await expect(
+      service.runAnalysisJob({} as never, jobContext, completionAction),
+    ).resolves.toEqual({
+      outcome: AnalysisJobExecutionOutcome.INPUT_LIMIT_EXCEEDED,
+      error: inputError,
+    });
+
+    expect(transaction.user.updateMany).not.toHaveBeenCalled();
+    expect(analysisJobService.reserveTokens).not.toHaveBeenCalled();
+    expect(llmProvider.analyze).not.toHaveBeenCalled();
+    expect(transaction.analysisReport.create).not.toHaveBeenCalled();
+    expect(statService.updateStats).not.toHaveBeenCalled();
+    expect(completionAction).not.toHaveBeenCalled();
+    const failureCall: unknown = analysisJobService.transition.mock.lastCall;
+    if (!Array.isArray(failureCall)) {
+      throw new Error('Expected a terminal transition call.');
+    }
+    const failureInput: unknown = failureCall[0];
+    expect(failureInput).toMatchObject({
+      toStatus: 'FAILED',
+      data: {
+        errorCode: 'INPUT_LIMIT_EXCEEDED',
+        errorRetryable: false,
+      },
+    });
   });
 
   it('does not reserve or debit a second time when the Job already has a reservation', async () => {

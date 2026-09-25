@@ -7,6 +7,7 @@ import { GithubInstallationStatus } from '@prisma/client';
 import { Octokit } from '@octokit/rest';
 import { PrismaService } from '../prisma/prisma.service';
 import { GithubAppAuthService } from './github-app-auth.service';
+import { normalizeGithubRequestError } from '../collection/github-errors';
 
 interface CachedInstallationToken {
   token: string;
@@ -98,10 +99,16 @@ export class GithubInstallationTokenService {
       );
     } catch (error) {
       if (!this.isUnauthorized(error)) {
-        throw error;
+        throw normalizeGithubRequestError(error);
       }
       this.tokenCache.delete(installationId);
-      return operation(await this.createInstallationOctokit(installationId));
+      try {
+        return await operation(
+          await this.createInstallationOctokit(installationId),
+        );
+      } catch (retryError) {
+        throw normalizeGithubRequestError(retryError);
+      }
     }
   }
 

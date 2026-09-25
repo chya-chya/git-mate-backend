@@ -1,7 +1,12 @@
 import { Injectable } from '@nestjs/common';
 import { Octokit } from '@octokit/rest';
 import { IGithubProvider } from './interfaces/collection.interface';
-import { RepositoryQueryResponse } from './types/github-api.types';
+import { normalizeGithubRequestError } from './github-errors';
+import {
+  PullRequestReviewsQueryResponse,
+  RepositoryQueryResponse,
+  ReviewCommentsQueryResponse,
+} from './types/github-api.types';
 
 @Injectable()
 export class GithubProvider implements IGithubProvider {
@@ -12,7 +17,6 @@ export class GithubProvider implements IGithubProvider {
     owner: string,
     repo: string,
     octokit: Octokit,
-    since?: Date,
     cursor?: string,
   ): Promise<RepositoryQueryResponse> {
     const query = `
@@ -31,26 +35,6 @@ export class GithubProvider implements IGithubProvider {
               }
               createdAt
               updatedAt
-              reviews(first: 50) {
-                nodes {
-                  id
-                  body
-                  state
-                  author {
-                    login
-                  }
-                  comments(first: 50) {
-                    nodes {
-                      id
-                      body
-                      author {
-                        login
-                      }
-                      createdAt
-                    }
-                  }
-                }
-              }
             }
             pageInfo {
               endCursor
@@ -61,10 +45,77 @@ export class GithubProvider implements IGithubProvider {
       }
     `;
 
-    return octokit.graphql<RepositoryQueryResponse>(query, {
-      owner,
-      repo,
-      cursor,
-    });
+    return this.graphql(octokit, query, { owner, repo, cursor });
+  }
+
+  async fetchPullRequestReviews(
+    pullRequestId: string,
+    octokit: Octokit,
+    cursor?: string,
+  ): Promise<PullRequestReviewsQueryResponse> {
+    const query = `
+      query($pullRequestId: ID!, $cursor: String) {
+        node(id: $pullRequestId) {
+          ... on PullRequest {
+            id
+            updatedAt
+            reviews(first: 50, after: $cursor) {
+              nodes {
+                id
+                body
+                state
+                author { login }
+              }
+              pageInfo { endCursor hasNextPage }
+            }
+          }
+        }
+      }
+    `;
+
+    return this.graphql(octokit, query, { pullRequestId, cursor });
+  }
+
+  async fetchReviewComments(
+    reviewId: string,
+    octokit: Octokit,
+    cursor?: string,
+  ): Promise<ReviewCommentsQueryResponse> {
+    const query = `
+      query($reviewId: ID!, $cursor: String) {
+        node(id: $reviewId) {
+          ... on PullRequestReview {
+            id
+            pullRequest {
+              id
+              updatedAt
+            }
+            comments(first: 50, after: $cursor) {
+              nodes {
+                id
+                body
+                author { login }
+                createdAt
+              }
+              pageInfo { endCursor hasNextPage }
+            }
+          }
+        }
+      }
+    `;
+
+    return this.graphql(octokit, query, { reviewId, cursor });
+  }
+
+  private async graphql<T>(
+    octokit: Octokit,
+    query: string,
+    variables: Record<string, string | undefined>,
+  ): Promise<T> {
+    try {
+      return await octokit.graphql<T>(query, variables);
+    } catch (error) {
+      throw normalizeGithubRequestError(error);
+    }
   }
 }

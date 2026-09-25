@@ -10,6 +10,10 @@ import { getEncoding } from 'js-tiktoken';
 import { ZodError } from 'zod';
 import { CollectedDataDto } from '../collection/types/github-api.types';
 import {
+  COLLECTION_LIMITS,
+  InputLimitExceededError,
+} from '../collection/collection-limits';
+import {
   AnalysisExecutionVersion,
   CURRENT_ANALYSIS_EXECUTION_VERSION,
   assertSupportedAnalysisExecutionVersion,
@@ -90,6 +94,16 @@ export type AnalysisMessage = {
   content: string;
 };
 
+export function assertAnalysisInputTokenLimit(estimatedTokens: number): void {
+  if (estimatedTokens > COLLECTION_LIMITS.analysisInputTokens) {
+    throw new InputLimitExceededError(
+      'analysis input tokens',
+      COLLECTION_LIMITS.analysisInputTokens,
+      estimatedTokens,
+    );
+  }
+}
+
 @Injectable()
 export class LlmProviderService {
   private readonly logger = new Logger(LlmProviderService.name);
@@ -117,12 +131,7 @@ export class LlmProviderService {
     });
     try {
       const messages = this.buildAnalysisMessages(data, version);
-      const estimatedTokens = this.getEstimatedTokenCount(messages);
-      if (estimatedTokens > 100000) {
-        throw new Error(
-          `Token limit exceeded: ${estimatedTokens} tokens (Limit: 100000)`,
-        );
-      }
+      assertAnalysisInputTokenLimit(this.getEstimatedTokenCount(messages));
 
       const completion = this.openai.chat.completions.parse({
         model: version.modelVersion,
@@ -258,9 +267,10 @@ export class LlmProviderService {
     data: CollectedDataDto,
     version: AnalysisExecutionVersion = CURRENT_ANALYSIS_EXECUTION_VERSION,
   ): number {
-    return this.getEstimatedTokenCount(
-      this.buildAnalysisMessages(data, version),
-    );
+    const messages = this.buildAnalysisMessages(data, version);
+    const estimatedTokens = this.getEstimatedTokenCount(messages);
+    assertAnalysisInputTokenLimit(estimatedTokens);
+    return estimatedTokens;
   }
 
   estimateTokenReservationForData(

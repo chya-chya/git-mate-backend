@@ -86,7 +86,7 @@ Worker가 허용하는 본문은 아래 두 필드만 포함하는 JSON object�
 재시도하여 다른 Worker의 실행을 방해하지 않습니다.
 
 GitHub 수집 후에만 토큰을 예약하고, 이미 예약된 재시도 Job은 다시 차감하지 않습니다.
-성공 또는 분석 데이터 없음에서만 `repository.lastSyncTime`을 Job의 `createdAt`까지 단조
+성공 또는 분석 데이터 없음에서만 `repository.lastSyncTime`을 Job의 `collectionCutoff`까지 단조
 증가시킵니다. 이 checkpoint는 리포트·통계·토큰 정산·Job 종결과 같은 transaction에
 포함됩니다.
 

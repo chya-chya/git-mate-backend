@@ -16,6 +16,7 @@ export interface CreateAnalysisJobRecordInput {
   modelVersion: string;
   promptVersion: string;
   sourceCursor?: Date | null;
+  collectionCutoff: Date;
   status: AnalysisJobStatus;
   stage: AnalysisJobStage;
   progress: number;

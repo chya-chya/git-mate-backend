@@ -36,6 +36,7 @@ const MAX_PROVIDER_REQUEST_IDS = 10;
 export enum AnalysisJobFailureCode {
   ANALYSIS_FAILED = 'ANALYSIS_FAILED',
   INSUFFICIENT_TOKENS = 'INSUFFICIENT_TOKENS',
+  INPUT_LIMIT_EXCEEDED = 'INPUT_LIMIT_EXCEEDED',
   MAX_ATTEMPTS_EXCEEDED = 'MAX_ATTEMPTS_EXCEEDED',
   NO_ANALYZABLE_DATA = 'NO_ANALYZABLE_DATA',
   PUBLISH_FAILED = 'PUBLISH_FAILED',
@@ -49,6 +50,8 @@ const SAFE_ERROR_MESSAGES: Record<AnalysisJobFailureCode, string> = {
   [AnalysisJobFailureCode.ANALYSIS_FAILED]: 'Analysis failed.',
   [AnalysisJobFailureCode.INSUFFICIENT_TOKENS]:
     'The token balance is insufficient.',
+  [AnalysisJobFailureCode.INPUT_LIMIT_EXCEEDED]:
+    'The analysis input limit was exceeded.',
   [AnalysisJobFailureCode.MAX_ATTEMPTS_EXCEEDED]:
     'The maximum number of attempts was exceeded.',
   [AnalysisJobFailureCode.NO_ANALYZABLE_DATA]:
@@ -70,6 +73,7 @@ export interface CreateAnalysisJobInput {
   repositoryId: number;
   idempotencyKey: string;
   sourceCursor?: Date | null;
+  collectionCutoff?: Date;
 }
 
 interface TokenSettlementInput {
@@ -205,6 +209,7 @@ export class AnalysisJobService {
 
     const versionedInput = {
       ...input,
+      collectionCutoff: input.collectionCutoff ?? new Date(),
       ...CURRENT_ANALYSIS_EXECUTION_VERSION,
     };
 
@@ -370,6 +375,9 @@ export class AnalysisJobService {
     }
     if (input.sourceCursor != null) {
       this.assertValidDate(input.sourceCursor, 'sourceCursor');
+    }
+    if (input.collectionCutoff != null) {
+      this.assertValidDate(input.collectionCutoff, 'collectionCutoff');
     }
   }
 

@@ -79,6 +79,7 @@ describe('CollectionService', () => {
   });
 
   it('uses the repository cursor when collecting pull requests', async () => {
+    let receivedCollectionInput: unknown;
     const repository = {
       id: 1,
       githubRepoId: '11',
@@ -88,25 +89,38 @@ describe('CollectionService', () => {
       owner: { username: 'developer' },
     };
     prisma.repository.findUnique.mockResolvedValue(repository);
-    repositoryCollection.collect.mockResolvedValue({
-      githubRepoId: '11',
-      owner: 'owner',
-      repo: 'private-repo',
-      targetUser: 'developer',
-      pullRequests: [],
+    repositoryCollection.collect.mockImplementation((input: unknown) => {
+      receivedCollectionInput = input;
+      return Promise.resolve({
+        githubRepoId: '11',
+        owner: 'owner',
+        repo: 'private-repo',
+        targetUser: 'developer',
+        pullRequests: [],
+      });
     });
     transaction.repository.updateMany.mockResolvedValue({ count: 1 });
     mockSuccessfulAnalysis();
 
     await service.syncRepository('11', 7);
 
-    expect(repositoryCollection.collect).toHaveBeenCalledWith({
+    expect(repositoryCollection.collect).toHaveBeenCalledTimes(1);
+    const collectionInput = receivedCollectionInput as {
+      userId: number;
+      githubRepoId: string;
+      fullName: string;
+      targetUser: string;
+      sourceCursor: Date;
+      collectionCutoff: Date;
+    };
+    expect(collectionInput).toMatchObject({
       userId: 7,
       githubRepoId: '11',
       fullName: 'owner/private-repo',
       targetUser: 'developer',
       sourceCursor: repository.lastSyncTime,
     });
+    expect(collectionInput.collectionCutoff).toBeInstanceOf(Date);
   });
 
   it('preserves the existing sync response and analysis input contract', async () => {
@@ -161,6 +175,14 @@ describe('CollectionService', () => {
     await expect(service.syncRepository('11', 7)).resolves.toEqual(
       expectedResponse,
     );
+    expect(repositoryCollection.collect).toHaveBeenCalledWith({
+      userId: 7,
+      githubRepoId: '11',
+      fullName: 'owner/private-repo',
+      targetUser: 'developer',
+      sourceCursor: undefined,
+      collectionCutoff: syncStartedAt,
+    });
     expect(analysisService.runAnalysis).toHaveBeenCalledWith(
       7,
       1,
@@ -214,6 +236,38 @@ describe('CollectionService', () => {
     });
     expect(transaction.repository.updateMany).not.toHaveBeenCalled();
     expect(prisma.repository.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('preserves the estimate response and uses a cutoff captured before collection', async () => {
+    const cutoff = new Date('2026-06-12T12:00:00.000Z');
+    jest.useFakeTimers({ now: cutoff });
+    prisma.repository.findUnique.mockResolvedValue({
+      id: 1,
+      githubRepoId: '11',
+      fullName: 'owner/private-repo',
+      lastSyncTime: new Date('2026-06-11T00:00:00.000Z'),
+      ownerId: 7,
+      owner: { username: 'developer' },
+    });
+    repositoryCollection.collect.mockResolvedValue({
+      githubRepoId: '11',
+      owner: 'owner',
+      repo: 'private-repo',
+      targetUser: 'developer',
+      pullRequests: [{ number: 1 }],
+    });
+    analysisService.estimateTokens.mockResolvedValue({
+      prCount: 1,
+      estimatedTokens: 123,
+    });
+
+    await expect(service.estimateCost('11', 7)).resolves.toEqual({
+      prCount: 1,
+      estimatedTokens: 123,
+    });
+    expect(repositoryCollection.collect).toHaveBeenCalledWith(
+      expect.objectContaining({ collectionCutoff: cutoff }),
+    );
   });
 
   it('does not move the sync cursor backward when an older sync finishes last', async () => {
