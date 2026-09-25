@@ -1,6 +1,7 @@
 import { ConfigService } from '@nestjs/config';
 import { getEncoding } from 'js-tiktoken';
 import { LengthFinishReasonError } from 'openai/error';
+import { ZodError } from 'zod';
 import { CollectedDataDto } from '../../collection/types/github-api.types';
 import {
   ANALYSIS_METRIC_KEYS,
@@ -63,15 +64,20 @@ describe('LlmProviderService structured outputs', () => {
       },
       ...overrides,
     };
-    const parse = jest.fn((input: unknown): Promise<unknown> => {
+    const parse = jest.fn((input: unknown): unknown => {
       capturedRequest = input;
-      return Promise.resolve(response);
+      return createCompletion(response);
     });
     Object.defineProperty(service, 'openai', {
       configurable: true,
       value: { chat: { completions: { parse } } },
     });
-    return { getCapturedRequest: () => capturedRequest, parse, service };
+    return {
+      getCapturedRequest: () => capturedRequest,
+      parse,
+      response,
+      service,
+    };
   }
 
   it('uses exact gpt-5-mini Structured Outputs and returns version metadata', async () => {
@@ -98,6 +104,17 @@ describe('LlmProviderService structured outputs', () => {
       modelVersion: 'gpt-5-mini',
       promptVersion: 'analysis-v2-structured-evidence',
     });
+  });
+
+  it('disables SDK retries so the worker owns retry policy', () => {
+    const service = new LlmProviderService({
+      get: jest.fn().mockReturnValue('test-api-key'),
+    } as unknown as ConfigService);
+
+    expect(
+      (service as unknown as { openai: { maxRetries: number } }).openai
+        .maxRetries,
+    ).toBe(0);
   });
 
   it.each([
@@ -169,12 +186,41 @@ describe('LlmProviderService structured outputs', () => {
     });
   });
 
-  it('turns SDK length termination into a non-retryable reconciliation error', async () => {
-    const { parse, service } = createService();
-    parse.mockRejectedValueOnce(new LengthFinishReasonError());
+  it('preserves raw billing metadata when SDK parsing rejects a length finish', async () => {
+    const { parse, response, service } = createService();
+    parse.mockImplementationOnce(() =>
+      createCompletion(response, new LengthFinishReasonError()),
+    );
 
     await expect(service.analyze(data)).rejects.toMatchObject({
       name: InvalidLlmProviderResponseError.name,
+      providerRequestId: 'chatcmpl_actual_123',
+      usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+      reason: 'INCOMPLETE_LENGTH',
+    });
+  });
+
+  it('preserves raw billing metadata when SDK schema parsing fails', async () => {
+    const { parse, response, service } = createService();
+    parse.mockImplementationOnce(() =>
+      createCompletion(response, new ZodError([])),
+    );
+
+    await expect(service.analyze(data)).rejects.toMatchObject({
+      name: InvalidLlmProviderResponseError.name,
+      providerRequestId: 'chatcmpl_actual_123',
+      usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+      reason: 'SCHEMA_VALIDATION_FAILED',
+    });
+  });
+
+  it('fails safe when raw billing metadata cannot be parsed', async () => {
+    const { parse, response, service } = createService();
+    parse.mockImplementationOnce(() =>
+      createCompletion(response, new LengthFinishReasonError(), null),
+    );
+
+    await expect(service.analyze(data)).rejects.toMatchObject({
       providerRequestId: null,
       usage: null,
       reason: 'INCOMPLETE_LENGTH',
@@ -197,6 +243,13 @@ describe('LlmProviderService structured outputs', () => {
       providerRequestId: 'chatcmpl_actual_123',
       usage: { totalTokens: 15 },
       reason: 'EVIDENCE_VALIDATION_FAILED',
+      evidenceIssues: [
+        {
+          code: 'UNKNOWN_PR',
+          metric: 'mutual_respect',
+          evidenceIndex: 0,
+        },
+      ],
     });
   });
 
@@ -267,5 +320,28 @@ describe('LlmProviderService structured outputs', () => {
       ),
       summary: '검증 가능한 근거만 사용했습니다.',
     } as LlmAnalysisResult;
+  }
+
+  function createCompletion(
+    response: unknown,
+    error?: Error,
+    rawBody: unknown = response,
+  ): unknown {
+    return {
+      asResponse: () =>
+        Promise.resolve(
+          rawBody === undefined
+            ? new Response('not-json')
+            : Response.json(rawBody),
+        ),
+      then: (
+        onFulfilled: (value: unknown) => unknown,
+        onRejected: (reason: unknown) => unknown,
+      ) =>
+        (error === undefined
+          ? Promise.resolve(response)
+          : Promise.reject(error)
+        ).then(onFulfilled, onRejected),
+    };
   }
 });

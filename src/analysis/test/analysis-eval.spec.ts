@@ -1,6 +1,7 @@
 import { ANALYSIS_METRIC_KEYS } from '../analysis-result.schema';
 import { ANALYSIS_GOLDEN_FIXTURES } from '../evals/golden-fixtures';
 import {
+  AnalysisEvalInput,
   ANALYSIS_EVAL_TOTAL_CASES,
   ANALYSIS_EVAL_TOTAL_LABELS,
   gradeAnalysisOutputs,
@@ -119,5 +120,45 @@ describe('analysis evaluation fixtures and grader', () => {
     expect(summary.evidenceValidationFailures).toBe(1);
     expect(summary.cases[0].evidencePassed).toBe(false);
     expect(summary.passed).toBe(false);
+  });
+
+  it('grades safe evidence issues without retaining a schema-valid model output', () => {
+    const failedFixture = ANALYSIS_GOLDEN_FIXTURES[0];
+    const outputs: AnalysisEvalInput[] = CHECKED_IN_REFERENCE_OUTPUTS.slice(
+      1,
+    ).map((candidate) => ({
+      ...candidate,
+    }));
+    outputs.push({
+      fixtureId: failedFixture.id,
+      evidenceIssues: [
+        {
+          code: 'UNKNOWN_PR' as const,
+          metric: failedFixture.focusMetric,
+          evidenceIndex: 0,
+        },
+        {
+          code: 'AUTHOR_MISMATCH' as const,
+          metric: failedFixture.focusMetric,
+          evidenceIndex: 1,
+        },
+      ],
+    });
+
+    const summary = gradeAnalysisOutputs(outputs);
+
+    expect(summary.schemaPassedCases).toBe(24);
+    expect(summary.scoreBandTotalLabels).toBe(192);
+    expect(summary.fabricatedPrCitations).toBe(1);
+    expect(summary.wrongUserAttributions).toBe(1);
+    expect(summary.evidenceValidationFailures).toBe(1);
+    expect(summary.missingOutputs).toBe(0);
+    expect(summary.cases[0]).toMatchObject({
+      schemaPassed: true,
+      evidencePassed: false,
+      matchingLabels: 0,
+      totalLabels: 8,
+      errorTypes: ['UNKNOWN_PR', 'AUTHOR_MISMATCH'],
+    });
   });
 });

@@ -3,13 +3,15 @@ import {
   LlmAnalysisResult,
   analysisResultSchema,
 } from '../analysis-result.schema';
-import { validateAnalysisEvidence } from '../evidence-validator';
+import {
+  EvidenceValidationIssue,
+  validateAnalysisEvidence,
+} from '../evidence-validator';
 import {
   ANALYSIS_GOLDEN_FIXTURES,
   AnalysisGoldenFixture,
   prepareGoldenFixtureInput,
 } from './golden-fixtures';
-import { CheckedInAnalysisOutput } from './reference-outputs';
 
 export const ANALYSIS_EVAL_TOTAL_CASES = 24;
 export const ANALYSIS_EVAL_TOTAL_LABELS = 192;
@@ -25,6 +27,12 @@ export interface AnalysisEvalCaseResult {
   matchingLabels: number;
   totalLabels: number;
   errorTypes: readonly string[];
+}
+
+export interface AnalysisEvalInput {
+  fixtureId: string;
+  output?: unknown;
+  evidenceIssues?: readonly EvidenceValidationIssue[];
 }
 
 export interface AnalysisEvalSummary {
@@ -44,7 +52,7 @@ export interface AnalysisEvalSummary {
 }
 
 export function gradeAnalysisOutputs(
-  outputs: readonly CheckedInAnalysisOutput[],
+  outputs: readonly AnalysisEvalInput[],
   fixtures: readonly AnalysisGoldenFixture[] = ANALYSIS_GOLDEN_FIXTURES,
 ): AnalysisEvalSummary {
   if (fixtures.length !== ANALYSIS_EVAL_TOTAL_CASES) {
@@ -53,7 +61,7 @@ export function gradeAnalysisOutputs(
     );
   }
   const outputsById = new Map(
-    outputs.map((candidate) => [candidate.fixtureId, candidate.output]),
+    outputs.map((candidate) => [candidate.fixtureId, candidate]),
   );
   const cases = fixtures.map((fixture) =>
     gradeCase(fixture, outputsById.get(fixture.id)),
@@ -115,12 +123,18 @@ export function gradeAnalysisOutputs(
 
 function gradeCase(
   fixture: AnalysisGoldenFixture,
-  output: unknown,
+  candidate: AnalysisEvalInput | undefined,
 ): AnalysisEvalCaseResult {
-  if (output === undefined) {
+  if (candidate === undefined) {
     return failedCase(fixture.id, 'MISSING_OUTPUT');
   }
-  const parsed = analysisResultSchema.safeParse(output);
+  if (candidate.evidenceIssues !== undefined) {
+    return failedEvidenceCase(fixture.id, candidate.evidenceIssues);
+  }
+  if (candidate.output === undefined) {
+    return failedCase(fixture.id, 'MISSING_OUTPUT');
+  }
+  const parsed = analysisResultSchema.safeParse(candidate.output);
   if (!parsed.success) {
     return failedCase(fixture.id, 'SCHEMA_INVALID');
   }
@@ -128,6 +142,52 @@ function gradeCase(
     parsed.data,
     prepareGoldenFixtureInput(fixture.input),
   );
+  const { fabricatedCitationCount, wrongUserAttributionCount } =
+    countEvidenceFailures(evidenceIssues);
+  const evidenceGatePassed = fixture.evidenceRequired.every(
+    (metric) => parsed.data[metric].evidence.length > 0,
+  );
+  return {
+    fixtureId: fixture.id,
+    schemaPassed: true,
+    evidencePassed: evidenceIssues.length === 0,
+    fabricatedCitationCount,
+    wrongUserAttributionCount,
+    evidenceGatePassed,
+    matchingLabels: countMatchingLabels(parsed.data, fixture),
+    totalLabels: ANALYSIS_METRIC_KEYS.length,
+    errorTypes: [
+      ...new Set(evidenceIssues.map((issue) => issue.code)),
+      ...(evidenceGatePassed ? [] : ['EVIDENCE_REQUIRED']),
+    ],
+  };
+}
+
+function failedEvidenceCase(
+  fixtureId: string,
+  evidenceIssues: readonly EvidenceValidationIssue[],
+): AnalysisEvalCaseResult {
+  const { fabricatedCitationCount, wrongUserAttributionCount } =
+    countEvidenceFailures(evidenceIssues);
+  return {
+    fixtureId,
+    schemaPassed: true,
+    evidencePassed: false,
+    fabricatedCitationCount,
+    wrongUserAttributionCount,
+    evidenceGatePassed: false,
+    matchingLabels: 0,
+    totalLabels: ANALYSIS_METRIC_KEYS.length,
+    errorTypes: [...new Set(evidenceIssues.map((issue) => issue.code))],
+  };
+}
+
+function countEvidenceFailures(
+  evidenceIssues: readonly EvidenceValidationIssue[],
+): Pick<
+  AnalysisEvalCaseResult,
+  'fabricatedCitationCount' | 'wrongUserAttributionCount'
+> {
   const fabricatedPositions = uniqueEvidencePositions(
     evidenceIssues.filter(
       (issue) =>
@@ -140,22 +200,9 @@ function gradeCase(
         issue.code === 'AUTHOR_MISMATCH' || issue.code === 'QUOTE_NOT_OWNED',
     ),
   );
-  const evidenceGatePassed = fixture.evidenceRequired.every(
-    (metric) => parsed.data[metric].evidence.length > 0,
-  );
   return {
-    fixtureId: fixture.id,
-    schemaPassed: true,
-    evidencePassed: evidenceIssues.length === 0,
     fabricatedCitationCount: fabricatedPositions.size,
     wrongUserAttributionCount: wrongUserPositions.size,
-    evidenceGatePassed,
-    matchingLabels: countMatchingLabels(parsed.data, fixture),
-    totalLabels: ANALYSIS_METRIC_KEYS.length,
-    errorTypes: [
-      ...new Set(evidenceIssues.map((issue) => issue.code)),
-      ...(evidenceGatePassed ? [] : ['EVIDENCE_REQUIRED']),
-    ],
   };
 }
 

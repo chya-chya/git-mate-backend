@@ -17,8 +17,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
-      RUN_LIVE_OPENAI_EVALS: 'true'
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       ASYNC_ANALYSIS_ENABLED: 'false'
     steps:
       - uses: actions/checkout@v7
@@ -28,8 +26,13 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Require OpenAI API key
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: test -n "$OPENAI_API_KEY"
       - name: Run all 24 synthetic live evaluations
+        env:
+          RUN_LIVE_OPENAI_EVALS: 'true'
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: npm run analysis:eval:live -- --output .artifacts/analysis-evals/latest.json
       - name: Upload evaluation report
         if: always()

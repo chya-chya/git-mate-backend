@@ -22,7 +22,11 @@ import {
   isValidAnalysisTokenUsage,
   isValidProviderRequestId,
 } from './analysis-billing-metadata';
-import { assertValidAnalysisEvidence } from './evidence-validator';
+import {
+  EvidenceValidationIssue,
+  InvalidAnalysisEvidenceError,
+  assertValidAnalysisEvidence,
+} from './evidence-validator';
 
 export const MAX_ANALYSIS_COMPLETION_TOKENS = 8192;
 export const ANALYSIS_STRUCTURED_OUTPUT_NAME =
@@ -48,6 +52,7 @@ export class LlmProviderReconciliationError extends Error {
     readonly providerRequestId: string | null,
     readonly usage: LlmTokenUsage | null,
     readonly reason = 'INVALID_PROVIDER_RESPONSE',
+    readonly evidenceIssues: readonly EvidenceValidationIssue[] | null = null,
   ) {
     super('A billed LLM response requires reconciliation.');
     this.name = LlmProviderReconciliationError.name;
@@ -59,8 +64,9 @@ export class InvalidLlmProviderResponseError extends LlmProviderReconciliationEr
     providerRequestId: string | null,
     usage: LlmTokenUsage | null = null,
     reason = 'INVALID_PROVIDER_RESPONSE',
+    evidenceIssues: readonly EvidenceValidationIssue[] | null = null,
   ) {
-    super(providerRequestId, usage, reason);
+    super(providerRequestId, usage, reason, evidenceIssues);
     this.name = InvalidLlmProviderResponseError.name;
   }
 }
@@ -92,7 +98,7 @@ export class LlmProviderService {
   constructor(private configService: ConfigService) {
     const apiKey = this.configService.get<string>('OPENAI_API_KEY');
     if (apiKey) {
-      this.openai = new OpenAI({ apiKey });
+      this.openai = new OpenAI({ apiKey, maxRetries: 0 });
     }
   }
 
@@ -105,6 +111,10 @@ export class LlmProviderService {
       throw new LlmProviderConfigurationError();
     }
 
+    let rawMetadataPromise = Promise.resolve<ProviderBillingMetadata>({
+      providerRequestId: null,
+      usage: null,
+    });
     try {
       const messages = this.buildAnalysisMessages(data, version);
       const estimatedTokens = this.getEstimatedTokenCount(messages);
@@ -114,7 +124,7 @@ export class LlmProviderService {
         );
       }
 
-      const response = await this.openai.chat.completions.parse({
+      const completion = this.openai.chat.completions.parse({
         model: version.modelVersion,
         messages,
         max_completion_tokens: MAX_ANALYSIS_COMPLETION_TOKENS,
@@ -123,6 +133,9 @@ export class LlmProviderService {
           ANALYSIS_STRUCTURED_OUTPUT_NAME,
         ),
       });
+      const rawResponse = await completion.asResponse();
+      rawMetadataPromise = this.snapshotProviderBillingMetadata(rawResponse);
+      const response = await completion;
 
       const providerRequestId = isValidProviderRequestId(response.id)
         ? response.id
@@ -176,11 +189,14 @@ export class LlmProviderService {
       }
       try {
         assertValidAnalysisEvidence(parsed.data, data);
-      } catch {
+      } catch (error) {
+        const issues =
+          error instanceof InvalidAnalysisEvidenceError ? error.issues : null;
         throw new InvalidLlmProviderResponseError(
           providerRequestId,
           usage,
           'EVIDENCE_VALIDATION_FAILED',
+          issues,
         );
       }
       if (typeof response.model !== 'string' || response.model.length === 0) {
@@ -207,23 +223,26 @@ export class LlmProviderService {
       };
     } catch (error) {
       if (error instanceof LengthFinishReasonError) {
+        const metadata = await rawMetadataPromise;
         throw new InvalidLlmProviderResponseError(
-          null,
-          null,
+          metadata.providerRequestId,
+          metadata.usage,
           'INCOMPLETE_LENGTH',
         );
       }
       if (error instanceof ContentFilterFinishReasonError) {
+        const metadata = await rawMetadataPromise;
         throw new InvalidLlmProviderResponseError(
-          null,
-          null,
+          metadata.providerRequestId,
+          metadata.usage,
           'INCOMPLETE_CONTENT_FILTER',
         );
       }
       if (error instanceof ZodError || error instanceof SyntaxError) {
+        const metadata = await rawMetadataPromise;
         throw new InvalidLlmProviderResponseError(
-          null,
-          null,
+          metadata.providerRequestId,
+          metadata.usage,
           'SCHEMA_VALIDATION_FAILED',
         );
       }
@@ -315,6 +334,40 @@ export class LlmProviderService {
     };
     return isValidAnalysisTokenUsage(normalized) ? normalized : null;
   }
+
+  private async snapshotProviderBillingMetadata(
+    response: Response,
+  ): Promise<ProviderBillingMetadata> {
+    try {
+      const payload: unknown = await response.clone().json();
+      if (!isRecord(payload)) {
+        return { providerRequestId: null, usage: null };
+      }
+      return {
+        providerRequestId: isValidProviderRequestId(payload.id)
+          ? payload.id
+          : null,
+        usage: isRecord(payload.usage)
+          ? this.normalizeProviderUsage({
+              prompt_tokens: payload.usage.prompt_tokens as number,
+              completion_tokens: payload.usage.completion_tokens as number,
+              total_tokens: payload.usage.total_tokens as number,
+            })
+          : null,
+      };
+    } catch {
+      return { providerRequestId: null, usage: null };
+    }
+  }
+}
+
+interface ProviderBillingMetadata {
+  providerRequestId: string | null;
+  usage: LlmTokenUsage | null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
 }
 
 export function buildStructuredAnalysisSystemPrompt(

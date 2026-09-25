@@ -3,8 +3,11 @@ import {
   ANALYSIS_GOLDEN_FIXTURES,
   prepareGoldenFixtureInput,
 } from './golden-fixtures';
-import { AnalysisEvalSummary, gradeAnalysisOutputs } from './grader';
-import { CheckedInAnalysisOutput } from './reference-outputs';
+import {
+  AnalysisEvalInput,
+  AnalysisEvalSummary,
+  gradeAnalysisOutputs,
+} from './grader';
 import {
   ANALYSIS_MODEL_VERSION,
   ANALYSIS_PROMPT_VERSION,
@@ -14,6 +17,7 @@ import {
   LlmProviderService,
   LlmTokenUsage,
 } from '../llm-provider.service';
+import { EvidenceValidationIssue } from '../evidence-validator';
 
 export interface LiveEvalCaseMetadata {
   fixtureId: string;
@@ -25,6 +29,7 @@ export interface LiveEvalCaseMetadata {
   latencyMs: number;
   usage: LlmTokenUsage | null;
   errorType: string | null;
+  evidenceIssues: readonly EvidenceValidationIssue[];
 }
 
 export interface LiveEvalReport {
@@ -60,7 +65,7 @@ export async function runLiveAnalysisEvaluation(
 ): Promise<LiveEvalReport> {
   assertLiveEvalOptIn(environment, false);
   const provider = new LlmProviderService(new ConfigService(environment));
-  const outputs: CheckedInAnalysisOutput[] = [];
+  const outputs: AnalysisEvalInput[] = [];
   const cases: LiveEvalCaseMetadata[] = [];
 
   for (const fixture of ANALYSIS_GOLDEN_FIXTURES) {
@@ -81,8 +86,16 @@ export async function runLiveAnalysisEvaluation(
         latencyMs: Date.now() - startedAt,
         usage: response.usage,
         errorType: null,
+        evidenceIssues: [],
       });
     } catch (error) {
+      const evidenceIssues =
+        error instanceof LlmProviderReconciliationError
+          ? error.evidenceIssues
+          : null;
+      if (evidenceIssues !== null) {
+        outputs.push({ fixtureId: fixture.id, evidenceIssues });
+      }
       cases.push({
         fixtureId: fixture.id,
         providerRequestId:
@@ -102,6 +115,7 @@ export async function runLiveAnalysisEvaluation(
             : error instanceof Error
               ? error.name
               : 'UnknownError',
+        evidenceIssues: evidenceIssues ?? [],
       });
     }
   }

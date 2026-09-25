@@ -160,6 +160,39 @@ describe('validateAnalysisEvidence', () => {
     );
   });
 
+  it.each([
+    ['bare PR number', '검토 결과는 #999에서 확인했습니다.'],
+    [
+      'GitHub issue URL',
+      'https://github.com/owner/repo/issues/999에서 확인했습니다.',
+    ],
+    [
+      'GitHub commit URL',
+      'https://github.com/owner/repo/commit/abcdef에서 확인했습니다.',
+    ],
+    ['plain GitHub URL', 'github.com/owner/repo/wiki에서 확인했습니다.'],
+    ['GitHub shorthand', 'owner/repo#999에서 확인했습니다.'],
+  ])('rejects %s outside structured evidence', (_name, narrative) => {
+    const result = makeResult();
+    result.mutual_respect.reason = narrative;
+
+    expect(validateAnalysisEvidence(result, data)).toContainEqual({
+      code: 'UNSTRUCTURED_REFERENCE',
+      metric: 'mutual_respect',
+      evidenceIndex: null,
+    });
+  });
+
+  it.each([
+    ['C# language version', 'C#8 nullable reference types를 적용했습니다.'],
+    ['F# language version', 'F#7 기능으로 구현했습니다.'],
+  ])('accepts %s as ordinary technical text', (_name, narrative) => {
+    const result = makeResult();
+    result.mutual_respect.reason = narrative;
+
+    expect(validateAnalysisEvidence(result, data)).toEqual([]);
+  });
+
   function makeResult(evidence?: {
     prNumber: number;
     permalink: string;
