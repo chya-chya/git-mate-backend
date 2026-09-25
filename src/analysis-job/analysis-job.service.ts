@@ -43,6 +43,7 @@ export enum AnalysisJobFailureCode {
   PROVIDER_RECONCILIATION_REQUIRED = 'PROVIDER_RECONCILIATION_REQUIRED',
   REPOSITORY_UNAVAILABLE = 'REPOSITORY_UNAVAILABLE',
   TOKEN_BUDGET_EXCEEDED = 'TOKEN_BUDGET_EXCEEDED',
+  UNSUPPORTED_ANALYSIS_VERSION = 'UNSUPPORTED_ANALYSIS_VERSION',
 }
 
 const SAFE_ERROR_MESSAGES: Record<AnalysisJobFailureCode, string> = {
@@ -63,6 +64,8 @@ const SAFE_ERROR_MESSAGES: Record<AnalysisJobFailureCode, string> = {
     'The repository is unavailable.',
   [AnalysisJobFailureCode.TOKEN_BUDGET_EXCEEDED]:
     'The analysis exceeded its token budget.',
+  [AnalysisJobFailureCode.UNSUPPORTED_ANALYSIS_VERSION]:
+    'The analysis execution version is no longer supported.',
 };
 
 export interface CreateAnalysisJobInput {

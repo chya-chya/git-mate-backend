@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { LlmAnalysisResult } from './llm-provider.service';
+import { LlmAnalysisResult } from './analysis-result.schema';
 
 export interface AnalysisMetrics {
   mutualRespectScore: number;

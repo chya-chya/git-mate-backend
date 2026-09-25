@@ -1,5 +1,6 @@
 export const ANALYSIS_MODEL_VERSION = 'gpt-5-mini';
-export const ANALYSIS_PROMPT_VERSION = 'analysis-v1';
+export const ANALYSIS_PROMPT_VERSION = 'analysis-v2-structured-evidence';
+export const LEGACY_ANALYSIS_PROMPT_VERSION = 'analysis-v1';
 
 export interface AnalysisExecutionVersion {
   modelVersion: string;
@@ -26,6 +27,15 @@ export function isSupportedAnalysisExecutionVersion(
   return (
     version.modelVersion === ANALYSIS_MODEL_VERSION &&
     version.promptVersion === ANALYSIS_PROMPT_VERSION
+  );
+}
+
+export function isRetiredAnalysisExecutionVersion(
+  version: AnalysisExecutionVersion,
+): boolean {
+  return (
+    version.modelVersion === ANALYSIS_MODEL_VERSION &&
+    version.promptVersion === LEGACY_ANALYSIS_PROMPT_VERSION
   );
 }
 

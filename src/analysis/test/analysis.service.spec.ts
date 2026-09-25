@@ -394,6 +394,48 @@ describe('AnalysisJobRunnerService', () => {
     expect(llmProvider.analyze).not.toHaveBeenCalled();
   });
 
+  it('terminalizes legacy analysis-v1 before collection/provider work and refunds its reservation', async () => {
+    const { analysisJobService, llmProvider, service, transaction } =
+      createFixture({
+        reservedTokens: 20,
+        executionVersion: {
+          modelVersion: 'gpt-5-mini',
+          promptVersion: 'analysis-v1',
+        },
+      });
+
+    const result = await service.recoverProviderCheckpoint(jobContext);
+
+    expect(result?.outcome).toBe(AnalysisJobExecutionOutcome.ANALYSIS_FAILED);
+    if (result?.outcome !== AnalysisJobExecutionOutcome.ANALYSIS_FAILED) {
+      throw new Error('Expected a terminal legacy-version result.');
+    }
+    expect(result.error).toBeInstanceOf(
+      UnsupportedAnalysisExecutionVersionError,
+    );
+    expect(llmProvider.analyze).not.toHaveBeenCalled();
+    expect(transaction.user.update).toHaveBeenCalledWith({
+      where: { id: 7 },
+      data: { availableTokens: { increment: 20 } },
+    });
+    const transitionCalls = analysisJobService.transition.mock
+      .calls as unknown as Array<
+      [
+        {
+          toStatus: string;
+          data: { errorCode: string; totalTokens: number };
+        },
+        unknown,
+      ]
+    >;
+    expect(transitionCalls[0][0].toStatus).toBe('FAILED');
+    expect(transitionCalls[0][0].data).toMatchObject({
+      errorCode: 'UNSUPPORTED_ANALYSIS_VERSION',
+      totalTokens: 0,
+    });
+    expect(transitionCalls[0][1]).toBe(transaction);
+  });
+
   it('recovers a durable provider checkpoint without collected data or an LLM call', async () => {
     const { analysisJobService, llmProvider, service, transaction } =
       createFixture({

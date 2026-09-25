@@ -73,6 +73,7 @@ jobs:
       - run: npx prisma generate
       - run: npm run build
       - run: npm test -- --runInBand
+      - run: npm run analysis:eval:ci
       - run: npm run test:e2e -- --runInBand
         env:
           JWT_SECRET: ci-e2e-only-secret

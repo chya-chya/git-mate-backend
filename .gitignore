@@ -6,6 +6,7 @@ node_modules
 /docs/worklog
 dist
 coverage/
+.artifacts/
 
 # Only the public database CA is allowed in this directory.
 certs/*
