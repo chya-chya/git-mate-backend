@@ -16,6 +16,7 @@ import {
   InvalidLlmProviderResponseError,
   LlmProviderService,
   LlmTokenEstimationError,
+  MAX_ANALYSIS_COMPLETION_TOKENS,
   assertAnalysisInputTokenLimit,
 } from '../llm-provider.service';
 
@@ -99,6 +100,68 @@ describe('LlmProviderService structured outputs', () => {
       response_format: { type: 'json_schema' },
     });
     expect(JSON.stringify(request)).not.toContain('json_object');
+  });
+
+  it('includes the exact Structured Outputs schema in token estimates and reservations', async () => {
+    const { getCapturedRequest, service } = createService();
+
+    await service.analyze(data);
+    const request = getCapturedRequest() as {
+      response_format: unknown;
+    };
+    const messageTokens = countMessageTokens(
+      service.buildAnalysisMessages(data),
+    );
+    const responseFormatTokens = Array.from(
+      JSON.stringify(request.response_format),
+    ).length;
+    const estimatedTokens = messageTokens + responseFormatTokens;
+
+    expect(responseFormatTokens).toBeGreaterThan(0);
+    expect(service.estimateTokensForData(data)).toBe(estimatedTokens);
+    expect(service.estimateTokenReservationForData(data)).toEqual({
+      estimatedTokens,
+      reservedTokens: estimatedTokens + MAX_ANALYSIS_COMPLETION_TOKENS,
+    });
+  });
+
+  it('enforces the input limit after adding the Structured Outputs schema', async () => {
+    const { getCapturedRequest, parse, service } = createService();
+
+    await service.analyze(data);
+    const request = getCapturedRequest() as {
+      response_format: unknown;
+    };
+    const responseFormatTokens = Array.from(
+      JSON.stringify(request.response_format),
+    ).length;
+    const dataWithoutBody = {
+      ...data,
+      pullRequests: [{ ...data.pullRequests[0], body: '' }],
+    };
+    const messageTokensWithoutBody = countMessageTokens(
+      service.buildAnalysisMessages(dataWithoutBody),
+    );
+    const bodyLength =
+      80_000 - messageTokensWithoutBody - responseFormatTokens + 1;
+    const dataOverLimit = {
+      ...dataWithoutBody,
+      pullRequests: [
+        { ...dataWithoutBody.pullRequests[0], body: 'a'.repeat(bodyLength) },
+      ],
+    };
+
+    expect(
+      countMessageTokens(service.buildAnalysisMessages(dataOverLimit)),
+    ).toBeLessThanOrEqual(80_000);
+    expect(() => service.estimateTokensForData(dataOverLimit)).toThrow(
+      InputLimitExceededError,
+    );
+    parse.mockClear();
+    await expect(service.analyze(dataOverLimit)).rejects.toBeInstanceOf(
+      InputLimitExceededError,
+    );
+    expect(parse).not.toHaveBeenCalled();
   });
 
   it('uses the immutable structured-evidence execution version', () => {
@@ -216,6 +279,18 @@ describe('LlmProviderService structured outputs', () => {
     });
   });
 
+  it('preserves raw billing metadata when response processing fails unexpectedly', async () => {
+    const { service } = createService({ choices: null });
+
+    await expect(service.analyze(data)).rejects.toMatchObject({
+      name: InvalidLlmProviderResponseError.name,
+      providerRequestId: 'chatcmpl_actual_123',
+      usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+      reason: 'RESPONSE_PROCESSING_FAILED',
+      evidenceIssues: null,
+    });
+  });
+
   it('fails safe when raw billing metadata cannot be parsed', async () => {
     const { parse, response, service } = createService();
     parse.mockImplementationOnce(() =>
@@ -329,6 +404,18 @@ describe('LlmProviderService structured outputs', () => {
       ),
       summary: '검증 가능한 근거만 사용했습니다.',
     } as LlmAnalysisResult;
+  }
+
+  function countMessageTokens(
+    messages: readonly { content: string }[],
+  ): number {
+    return (
+      3 +
+      messages.reduce(
+        (total, message) => total + 4 + Array.from(message.content).length,
+        0,
+      )
+    );
   }
 
   function createCompletion(

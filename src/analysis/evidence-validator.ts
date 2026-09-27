@@ -26,7 +26,7 @@ export class InvalidAnalysisEvidenceError extends Error {
 }
 
 const UNSTRUCTURED_REFERENCE_PATTERN =
-  /(?:(?:https?:\/\/)?(?:www\.)?github\.com(?:\/[^\s)]*)?|\b[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#\d+\b|(?<![\p{L}\p{N}_])#\d+\b|\b(?:PR|pull request)\s*#?\d+\b)/iu;
+  /(?:(?:https?:\/\/)?(?:www\.)?github\.com(?:\/[^\s)]*)?|\b[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#\d+\b|(?<![\p{L}\p{N}_])#\d+\b|\b(?:PR|pull request)\s*#?\d+\b|\d+\s*번\s*(?:PR|pull request)(?![A-Za-z0-9_]))/iu;
 
 export function validateAnalysisEvidence(
   result: LlmAnalysisResult,

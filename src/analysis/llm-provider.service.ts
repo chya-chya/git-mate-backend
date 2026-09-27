@@ -35,6 +35,10 @@ import {
 export const MAX_ANALYSIS_COMPLETION_TOKENS = 8192;
 export const ANALYSIS_STRUCTURED_OUTPUT_NAME =
   'git_mate_analysis_v2_structured_evidence';
+const ANALYSIS_RESPONSE_FORMAT = zodResponseFormat(
+  analysisResultSchema,
+  ANALYSIS_STRUCTURED_OUTPUT_NAME,
+);
 
 export interface LlmTokenUsage {
   promptTokens: number;
@@ -129,6 +133,7 @@ export class LlmProviderService {
       providerRequestId: null,
       usage: null,
     });
+    let hasRawResponse = false;
     try {
       const messages = this.buildAnalysisMessages(data, version);
       assertAnalysisInputTokenLimit(this.getEstimatedTokenCount(messages));
@@ -137,12 +142,10 @@ export class LlmProviderService {
         model: version.modelVersion,
         messages,
         max_completion_tokens: MAX_ANALYSIS_COMPLETION_TOKENS,
-        response_format: zodResponseFormat(
-          analysisResultSchema,
-          ANALYSIS_STRUCTURED_OUTPUT_NAME,
-        ),
+        response_format: ANALYSIS_RESPONSE_FORMAT,
       });
       const rawResponse = await completion.asResponse();
+      hasRawResponse = true;
       rawMetadataPromise = this.snapshotProviderBillingMetadata(rawResponse);
       const response = await completion;
 
@@ -255,6 +258,17 @@ export class LlmProviderService {
           'SCHEMA_VALIDATION_FAILED',
         );
       }
+      if (error instanceof LlmProviderReconciliationError) {
+        throw error;
+      }
+      if (hasRawResponse) {
+        const metadata = await rawMetadataPromise;
+        throw new InvalidLlmProviderResponseError(
+          metadata.providerRequestId,
+          metadata.usage,
+          'RESPONSE_PROCESSING_FAILED',
+        );
+      }
       this.logger.error({
         event: 'llm_analysis_failed',
         errorType: error instanceof Error ? error.name : 'UnknownError',
@@ -314,6 +328,9 @@ export class LlmProviderService {
       for (const message of messages) {
         totalTokens += 4 + encoding.encode(message.content).length;
       }
+      totalTokens += encoding.encode(
+        JSON.stringify(ANALYSIS_RESPONSE_FORMAT),
+      ).length;
       return totalTokens;
     } catch (error) {
       this.logger.error({

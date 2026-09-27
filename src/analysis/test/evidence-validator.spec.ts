@@ -172,6 +172,13 @@ describe('validateAnalysisEvidence', () => {
     ],
     ['plain GitHub URL', 'github.com/owner/repo/wiki에서 확인했습니다.'],
     ['GitHub shorthand', 'owner/repo#999에서 확인했습니다.'],
+    ['Korean number-first PR reference', '999번 PR에서 검증했습니다.'],
+    ['Korean number-first spaced PR reference', '999 번 PR에서 검증했습니다.'],
+    ['Korean number-first compact PR reference', '999번PR에서 검증했습니다.'],
+    [
+      'Korean number-first pull request reference',
+      '999 번 pull request에서 검증했습니다.',
+    ],
   ])('rejects %s outside structured evidence', (_name, narrative) => {
     const result = makeResult();
     result.mutual_respect.reason = narrative;
