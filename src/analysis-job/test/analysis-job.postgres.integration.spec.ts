@@ -7,6 +7,7 @@ import type { SQSRecord } from 'aws-lambda';
 import { HttpException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AnalysisJobRunnerService } from '../../analysis/analysis.service';
+import { CURRENT_ANALYSIS_EXECUTION_VERSION } from '../../analysis/analysis-execution-version';
 import { LlmProviderService } from '../../analysis/llm-provider.service';
 import { MetricCalculatorService } from '../../analysis/metric-calculator.service';
 import { PreprocessorService } from '../../analysis/preprocessor.service';
@@ -1025,6 +1026,7 @@ describeDatabase('AnalysisJob PostgreSQL invariants', () => {
         repositoryId: repository.id,
         idempotencyKey: 'worker-idempotency',
         requestHash: 'f'.repeat(64),
+        ...CURRENT_ANALYSIS_EXECUTION_VERSION,
         sourceCursor: repository.lastSyncTime,
         collectionCutoff,
         createdAt,

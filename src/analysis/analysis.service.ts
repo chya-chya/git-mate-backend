@@ -19,7 +19,9 @@ import {
 import type { RunningAnalysisJobContext } from '../analysis-job/analysis-job.repository';
 import {
   AnalysisExecutionVersion,
+  UnsupportedAnalysisExecutionVersionError,
   assertSupportedAnalysisExecutionVersion,
+  isRetiredAnalysisExecutionVersion,
 } from './analysis-execution-version';
 import {
   AnalysisTokenUsage,
@@ -193,6 +195,13 @@ export class AnalysisJobRunnerService {
     if (recovered !== null) {
       return recovered;
     }
+    const retired = await this.retireLegacyExecution(
+      resolved,
+      completionAction,
+    );
+    if (retired !== null) {
+      return retired;
+    }
     assertSupportedAnalysisExecutionVersion(resolved.context);
     return this.executeAnalysis(
       resolved.job.userId,
@@ -212,7 +221,11 @@ export class AnalysisJobRunnerService {
     jobContext: AnalysisJobExecutionContext,
   ): Promise<AnalysisJobExecutionResult | null> {
     const resolved = await this.resolveRunningExecution(jobContext);
-    return this.reconcileProviderCheckpoint(resolved);
+    const recovered = await this.reconcileProviderCheckpoint(resolved);
+    if (recovered !== null) {
+      return recovered;
+    }
+    return this.retireLegacyExecution(resolved);
   }
 
   private async resolveRunningExecution(
@@ -254,6 +267,32 @@ export class AnalysisJobRunnerService {
         providerCheckpoint.providerRequestId,
         providerCheckpoint.usage,
       ),
+    };
+  }
+
+  private async retireLegacyExecution(
+    resolved: ResolvedRunningAnalysisJobExecution,
+    completionAction?: AnalysisCompletionAction,
+  ): Promise<AnalysisJobExecutionResult | null> {
+    if (!isRetiredAnalysisExecutionVersion(resolved.context)) {
+      return null;
+    }
+    const error = new UnsupportedAnalysisExecutionVersionError(
+      resolved.context,
+    );
+    await this.terminateWorkerJob(
+      resolved.job.userId,
+      resolved.job.repositoryId,
+      resolved.context,
+      AnalysisJobFailureCode.UNSUPPORTED_ANALYSIS_VERSION,
+      ZERO_TOKEN_USAGE,
+      resolved.job.reservedTokens ?? 0,
+      [],
+      { completionAction },
+    );
+    return {
+      outcome: AnalysisJobExecutionOutcome.ANALYSIS_FAILED,
+      error,
     };
   }
 

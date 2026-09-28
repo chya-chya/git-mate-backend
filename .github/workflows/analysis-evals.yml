@@ -1,0 +1,44 @@
+name: Live analysis evaluation
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 18 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-analysis-eval
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      ASYNC_ANALYSIS_ENABLED: 'false'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Require OpenAI API key
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: test -n "$OPENAI_API_KEY"
+      - name: Run all 24 synthetic live evaluations
+        env:
+          RUN_LIVE_OPENAI_EVALS: 'true'
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: npm run analysis:eval:live -- --output .artifacts/analysis-evals/latest.json
+      - name: Upload evaluation report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: analysis-eval-${{ github.run_id }}
+          path: .artifacts/analysis-evals/latest.json
+          if-no-files-found: error
+          retention-days: 30
