@@ -70,6 +70,8 @@ export interface LiveEvalComparison {
     candidateFabricatedPrCitations: boolean;
     candidateWrongUserAttributions: boolean;
     candidateUnsupportedClaims: boolean;
+    candidateEvidenceValidationFailures: boolean;
+    candidateEvidenceGateFailures: boolean;
     candidateScoreBandAgreement: boolean;
     candidateAtLeastAsGoodCases: boolean;
     averageTotalTokensWithinTwentyPercent: boolean;
@@ -207,6 +209,16 @@ export function renderLiveEvalMarkdown(report: LiveEvalReport): string {
       'Unsupported claims',
       report.baseline.summary.unsupportedClaims,
       report.candidate.summary.unsupportedClaims,
+    ),
+    metricRow(
+      'Evidence validation failures',
+      report.baseline.summary.evidenceValidationFailures,
+      report.candidate.summary.evidenceValidationFailures,
+    ),
+    metricRow(
+      'Evidence gate failures',
+      report.baseline.summary.evidenceGateFailures,
+      report.candidate.summary.evidenceGateFailures,
     ),
     metricRow(
       'Score-band agreement',
@@ -471,6 +483,9 @@ function compareVariants(
     candidateWrongUserAttributions:
       candidate.summary.wrongUserAttributions === 0,
     candidateUnsupportedClaims: candidate.summary.unsupportedClaims === 0,
+    candidateEvidenceValidationFailures:
+      candidate.summary.evidenceValidationFailures === 0,
+    candidateEvidenceGateFailures: candidate.summary.evidenceGateFailures === 0,
     candidateScoreBandAgreement:
       candidate.summary.scoreBandMatchingLabels >= ANALYSIS_EVAL_MIN_AGREEMENT,
     candidateAtLeastAsGoodCases: candidateAtLeastAsGoodCases >= 20,

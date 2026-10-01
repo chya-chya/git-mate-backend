@@ -69,6 +69,13 @@ export function validateAnalysisEvidence(
     }
 
     evaluation.evidence.forEach((evidence, evidenceIndex) => {
+      if (UNSTRUCTURED_REFERENCE_PATTERN.test(evidence.scoreRationale)) {
+        issues.push({
+          code: 'UNSTRUCTURED_REFERENCE',
+          metric,
+          evidenceIndex,
+        });
+      }
       const pullRequest = pullRequests.get(evidence.prNumber);
       if (!pullRequest) {
         issues.push({ code: 'UNKNOWN_PR', metric, evidenceIndex });

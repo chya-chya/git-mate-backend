@@ -161,6 +161,22 @@ describe('validateAnalysisEvidence', () => {
     );
   });
 
+  it('rejects PR references inside evidence score rationale', () => {
+    const result = makeResult({
+      prNumber: 10,
+      permalink: 'https://github.com/owner/repo/pull/10',
+      author: 'TargetDev',
+      quote: 'Target title',
+      scoreRationale: '입력에 없는 PR #999의 성과까지 반영했습니다.',
+    });
+
+    expect(validateAnalysisEvidence(result, data)).toContainEqual({
+      code: 'UNSTRUCTURED_REFERENCE',
+      metric: 'mutual_respect',
+      evidenceIndex: 0,
+    });
+  });
+
   it('rejects a source type and target relation that do not correspond', () => {
     const result = makeResult({
       prNumber: 10,
@@ -236,6 +252,7 @@ describe('validateAnalysisEvidence', () => {
     quote: string;
     sourceType?: AnalysisEvidence['sourceType'];
     targetRelation?: AnalysisEvidence['targetRelation'];
+    scoreRationale?: string;
   }): LlmAnalysisPayload {
     const normalizedEvidence = evidence
       ? {
@@ -254,7 +271,8 @@ describe('validateAnalysisEvidence', () => {
               : evidence.quote.includes('comment')
                 ? 'target_authored_review_comment'
                 : 'target_authored_pr'),
-          scoreRationale: '합성 원문으로 점수를 판단했습니다.',
+          scoreRationale:
+            evidence.scoreRationale ?? '합성 원문으로 점수를 판단했습니다.',
         }
       : undefined;
     return {

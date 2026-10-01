@@ -128,6 +128,32 @@ describe('analysis evaluation fixtures and grader', () => {
     expect(summary.passed).toBe(false);
   });
 
+  it('rejects reusing focus evidence for an unrelated structured metric', () => {
+    const fixture = ANALYSIS_GOLDEN_FIXTURES[0];
+    const reference = structuredClone(CHECKED_IN_REFERENCE_OUTPUTS[0]);
+    const output = reference.output as Record<
+      string,
+      { evidence: Array<Record<string, unknown>> }
+    >;
+    const unrelatedMetric = ANALYSIS_METRIC_KEYS.find(
+      (metric) => metric !== fixture.focusMetric,
+    );
+    expect(unrelatedMetric).toBeDefined();
+    output[unrelatedMetric!].evidence = structuredClone(
+      output[fixture.focusMetric].evidence,
+    );
+
+    const summary = gradeAnalysisOutputs(
+      CHECKED_IN_REFERENCE_OUTPUTS.map((candidate) =>
+        candidate.fixtureId === fixture.id ? reference : candidate,
+      ),
+    );
+
+    expect(summary.evidenceGateFailures).toBe(1);
+    expect(summary.cases[0].errorTypes).toContain('FIXTURE_FORBIDDEN_EVIDENCE');
+    expect(summary.passed).toBe(false);
+  });
+
   it('grades safe evidence issues without retaining a schema-valid model output', () => {
     const failedFixture = ANALYSIS_GOLDEN_FIXTURES[0];
     const outputs: AnalysisEvalInput[] = CHECKED_IN_REFERENCE_OUTPUTS.slice(
@@ -173,7 +199,8 @@ describe('analysis evaluation fixtures and grader', () => {
       const metrics = Object.fromEntries(
         ANALYSIS_METRIC_KEYS.map((metric) => {
           const band = fixture.expectedScoreBands[metric];
-          const needsEvidence = fixture.evidenceRequired.includes(metric);
+          const needsEvidence =
+            fixture.evidenceContract[metric].mustCite.length > 0;
           return [
             metric,
             {
@@ -205,6 +232,21 @@ describe('analysis evaluation fixtures and grader', () => {
       wrongUserAttributions: 0,
       passed: true,
     });
+
+    const reused = structuredClone(outputs);
+    const reusedOutput = reused[0].output as Record<string, { reason: string }>;
+    reusedOutput.conflict_management.reason =
+      reusedOutput.mutual_respect.reason;
+    const reusedSummary = gradeAnalysisOutputs(
+      reused,
+      ANALYSIS_GOLDEN_FIXTURES,
+      'legacy',
+    );
+    expect(reusedSummary.evidenceGateFailures).toBe(1);
+    expect(reusedSummary.cases[0].errorTypes).toContain(
+      'FIXTURE_FORBIDDEN_EVIDENCE',
+    );
+    expect(reusedSummary.passed).toBe(false);
 
     const forged = structuredClone(outputs);
     const forgedOutput = forged[0].output as Record<string, { reason: string }>;

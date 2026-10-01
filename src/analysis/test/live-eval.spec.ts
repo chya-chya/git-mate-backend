@@ -80,13 +80,23 @@ describe('live analysis baseline/candidate evaluation', () => {
           ),
         );
       }
-      const output = CHECKED_IN_REFERENCE_OUTPUTS[fixtureIndex]
+      const referenceOutput = CHECKED_IN_REFERENCE_OUTPUTS[fixtureIndex]
         .output as LlmAnalysisResult;
+      const output =
+        fixtureIndex === 1
+          ? {
+              ...referenceOutput,
+              mutual_respect: {
+                ...referenceOutput.mutual_respect,
+                evidence: [],
+              },
+            }
+          : referenceOutput;
       return Promise.resolve({
         providerRequestId: `chatcmpl_candidate_${fixtureIndex}`,
         requestedModel: 'gpt-5-mini',
         responseModel: 'gpt-5-mini-snapshot',
-        promptVersion: 'analysis-v2-structured-evidence',
+        promptVersion: 'analysis-v3-structured-evidence-rationale',
         schemaVersion: output.metadata.schemaVersion,
         generatedAt: output.metadata.generatedAt,
         usage: { promptTokens: 7, completionTokens: 5, totalTokens: 12 },
@@ -116,6 +126,7 @@ describe('live analysis baseline/candidate evaluation', () => {
       scoreBandTotalLabels: 192,
       fabricatedPrCitations: 1,
       evidenceValidationFailures: 1,
+      evidenceGateFailures: 2,
       missingOutputs: 0,
     });
     expect(report.candidate.cases[0]).toMatchObject({
@@ -130,7 +141,13 @@ describe('live analysis baseline/candidate evaluation', () => {
       ],
     });
     expect(report.comparison.criteria.labelsApproved).toBe(false);
-    expect(report.comparison.candidateAtLeastAsGoodCases).toBe(23);
+    expect(report.comparison.criteria.candidateEvidenceValidationFailures).toBe(
+      false,
+    );
+    expect(report.comparison.criteria.candidateEvidenceGateFailures).toBe(
+      false,
+    );
+    expect(report.comparison.candidateAtLeastAsGoodCases).toBe(22);
     expect(report.comparison.passed).toBe(false);
     expect(JSON.stringify(report)).not.toContain('secret-not-for-artifact');
     expect(run).toHaveBeenCalledTimes(48);
@@ -157,7 +174,8 @@ function makeLegacyOutput(index: number): Record<string, unknown> {
       example: metric.example,
     };
     legacy[key] =
-      key === fixture.focusMetric && fixture.evidenceRequired.length > 0
+      key === fixture.focusMetric &&
+      fixture.evidenceContract[key].mustCite.length > 0
         ? {
             ...legacyMetric,
             reason: `${legacyMetric.reason} [PR #${fixture.input.pullRequests[0].number}](${fixture.input.pullRequests[0].permalink})`,

@@ -1,5 +1,6 @@
 import {
   ANALYSIS_METRIC_KEYS,
+  AnalysisEvidence,
   LlmAnalysisResult,
   analysisResultSchema,
 } from '../analysis-result.schema';
@@ -10,6 +11,7 @@ import {
 import { z } from 'zod';
 import {
   ANALYSIS_GOLDEN_FIXTURES,
+  AllowedFixtureEvidence,
   AnalysisGoldenFixture,
   prepareGoldenFixtureInput,
 } from './golden-fixtures';
@@ -186,9 +188,11 @@ function gradeCase(
   const { fabricatedCitationCount, wrongUserAttributionCount } =
     countEvidenceFailures(evidenceIssues);
   const unsupportedClaimCount = countUnsupportedClaims(evidenceIssues);
-  const evidenceGatePassed = fixture.evidenceRequired.every(
-    (metric) => parsed.data[metric].evidence.length > 0,
+  const fixtureEvidenceErrors = validateStructuredFixtureEvidence(
+    parsed.data,
+    fixture,
   );
+  const evidenceGatePassed = fixtureEvidenceErrors.length === 0;
   return {
     fixtureId: fixture.id,
     schemaPassed: true,
@@ -201,7 +205,7 @@ function gradeCase(
     totalLabels: ANALYSIS_METRIC_KEYS.length,
     errorTypes: [
       ...new Set(evidenceIssues.map((issue) => issue.code)),
-      ...(evidenceGatePassed ? [] : ['EVIDENCE_REQUIRED']),
+      ...fixtureEvidenceErrors,
     ],
   };
 }
@@ -219,11 +223,16 @@ function gradeLegacyCase(
   let fabricatedCitationCount = 0;
   let wrongUserAttributionCount = 0;
   let unsupportedClaimCount = 0;
-  const validCitationMetrics = new Set<string>();
+  const citationsByMetric = new Map<string, readonly LegacyCitation[]>();
 
   for (const metric of ANALYSIS_METRIC_KEYS) {
     const evaluation = parsed.data[metric];
-    const citations = extractLegacyCitations(evaluation.reason);
+    const citations = extractLegacyCitations(
+      [evaluation.reason, evaluation.improvement, evaluation.example].join(
+        '\n',
+      ),
+    );
+    citationsByMetric.set(metric, citations);
     let hasValidCitation = false;
     for (const citation of citations) {
       const pullRequest = fixture.input.pullRequests.find(
@@ -246,19 +255,23 @@ function gradeLegacyCase(
       }
       hasValidCitation = true;
     }
-    if (hasValidCitation) {
-      validCitationMetrics.add(metric);
-    } else if (evaluation.score !== 3 && evaluation.score !== 3.5) {
+    if (
+      !hasValidCitation &&
+      evaluation.score !== 3 &&
+      evaluation.score !== 3.5
+    ) {
       unsupportedClaimCount += 1;
       errorTypes.add('UNSUPPORTED_SCORE_WITHOUT_EVIDENCE');
     }
   }
 
-  const evidenceGatePassed = fixture.evidenceRequired.every((metric) =>
-    validCitationMetrics.has(metric),
+  const fixtureEvidenceErrors = validateLegacyFixtureEvidence(
+    fixture,
+    citationsByMetric,
   );
-  if (!evidenceGatePassed) {
-    errorTypes.add('EVIDENCE_REQUIRED');
+  const evidenceGatePassed = fixtureEvidenceErrors.length === 0;
+  for (const fixtureEvidenceError of fixtureEvidenceErrors) {
+    errorTypes.add(fixtureEvidenceError);
   }
   const evidencePassed =
     fabricatedCitationCount === 0 &&
@@ -278,9 +291,7 @@ function gradeLegacyCase(
   };
 }
 
-function extractLegacyCitations(
-  reason: string,
-): readonly { prNumber: number; permalink: string | null }[] {
+function extractLegacyCitations(reason: string): readonly LegacyCitation[] {
   const citations = new Map<
     number,
     { prNumber: number; permalink: string | null }
@@ -302,6 +313,98 @@ function extractLegacyCitations(
     }
   }
   return [...citations.values()];
+}
+
+interface LegacyCitation {
+  prNumber: number;
+  permalink: string | null;
+}
+
+function validateStructuredFixtureEvidence(
+  result: LlmAnalysisResult,
+  fixture: AnalysisGoldenFixture,
+): readonly string[] {
+  const errors = new Set<string>();
+  for (const metric of ANALYSIS_METRIC_KEYS) {
+    const contract = fixture.evidenceContract[metric];
+    const evidence = result[metric].evidence;
+    if (
+      contract.mustCite.length > 0 &&
+      !evidence.some((item) =>
+        contract.mustCite.some((required) =>
+          matchesStructuredEvidence(item, required),
+        ),
+      )
+    ) {
+      errors.add('FIXTURE_REQUIRED_EVIDENCE_MISSING');
+    }
+    if (
+      evidence.some((item) =>
+        contract.mustNotCite.some((forbidden) =>
+          matchesStructuredEvidence(item, forbidden),
+        ),
+      )
+    ) {
+      errors.add('FIXTURE_FORBIDDEN_EVIDENCE');
+    }
+  }
+  return [...errors];
+}
+
+function matchesStructuredEvidence(
+  actual: AnalysisEvidence,
+  expected: AllowedFixtureEvidence,
+): boolean {
+  return (
+    actual.prNumber === expected.prNumber &&
+    actual.permalink === expected.permalink &&
+    actual.author.toLocaleLowerCase('en-US') ===
+      expected.author.toLocaleLowerCase('en-US') &&
+    actual.sourceType === expected.sourceType &&
+    actual.targetRelation === expected.targetRelation
+  );
+}
+
+function validateLegacyFixtureEvidence(
+  fixture: AnalysisGoldenFixture,
+  citationsByMetric: ReadonlyMap<string, readonly LegacyCitation[]>,
+): readonly string[] {
+  const errors = new Set<string>();
+  for (const metric of ANALYSIS_METRIC_KEYS) {
+    const contract = fixture.evidenceContract[metric];
+    const citations = citationsByMetric.get(metric) ?? [];
+    if (
+      contract.mustCite.length > 0 &&
+      !citations.some((citation) =>
+        contract.mustCite.some((required) =>
+          matchesRequiredLegacyEvidence(citation, required),
+        ),
+      )
+    ) {
+      errors.add('FIXTURE_REQUIRED_EVIDENCE_MISSING');
+    }
+    if (
+      citations.some((citation) =>
+        contract.mustNotCite.some(
+          (forbidden) => citation.prNumber === forbidden.prNumber,
+        ),
+      )
+    ) {
+      errors.add('FIXTURE_FORBIDDEN_EVIDENCE');
+    }
+  }
+  return [...errors];
+}
+
+function matchesRequiredLegacyEvidence(
+  citation: LegacyCitation,
+  expected: AllowedFixtureEvidence,
+): boolean {
+  return (
+    citation.prNumber === expected.prNumber &&
+    citation.permalink?.toLocaleLowerCase('en-US') ===
+      expected.permalink.toLocaleLowerCase('en-US')
+  );
 }
 
 function hasTargetActivity(

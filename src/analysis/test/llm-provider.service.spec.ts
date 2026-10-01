@@ -90,12 +90,12 @@ describe('LlmProviderService structured outputs', () => {
       providerRequestId: 'chatcmpl_actual_123',
       requestedModel: 'gpt-5-mini',
       responseModel: 'gpt-5-mini',
-      promptVersion: 'analysis-v2-structured-evidence',
+      promptVersion: 'analysis-v3-structured-evidence-rationale',
       result: {
         metadata: {
           requestedModel: 'gpt-5-mini',
           responseModel: 'gpt-5-mini',
-          promptVersion: 'analysis-v2-structured-evidence',
+          promptVersion: 'analysis-v3-structured-evidence-rationale',
           schemaVersion: 'analysis-result-v2',
         },
       },
@@ -175,7 +175,7 @@ describe('LlmProviderService structured outputs', () => {
   it('uses the immutable structured-evidence execution version', () => {
     expect(CURRENT_ANALYSIS_EXECUTION_VERSION).toEqual({
       modelVersion: 'gpt-5-mini',
-      promptVersion: 'analysis-v2-structured-evidence',
+      promptVersion: 'analysis-v3-structured-evidence-rationale',
     });
   });
 

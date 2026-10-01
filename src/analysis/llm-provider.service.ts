@@ -468,7 +468,7 @@ export const CANDIDATE_SYSTEM_PROMPT_TEMPLATE = `당신은 GitHub Pull Request, 
 - 인용은 각 지표의 evidence 배열에만 넣으세요. reason, improvement, example, summary에는 PR 번호나 GitHub URL을 쓰지 마세요.
 - evidence의 prNumber, permalink, author, quote는 입력에 있는 값을 그대로 사용하세요. 링크를 조립하거나 존재하지 않는 PR, URL, 인용문을 만들지 마세요.
 - evidence의 sourceType은 pull_request, review, review_comment 중 실제 원문의 유형을 사용하고 targetRelation은 각각 target_authored_pr, target_authored_review, target_authored_review_comment로 정확히 대응하세요.
-- evidence의 scoreRationale에는 해당 원문이 이 지표의 점수를 뒷받침하는 이유를 작성하세요.
+- evidence의 scoreRationale에는 해당 원문이 이 지표의 점수를 뒷받침하는 이유만 작성하고, PR 번호나 GitHub URL은 쓰지 마세요. PR 식별자는 같은 evidence의 prNumber와 permalink로만 표현하세요.
 - quote는 대상자가 작성한 하나의 PR title/body, review body 또는 review comment body 안에 연속해서 존재하는 원문이어야 합니다. 서로 다른 문장을 이어 붙이지 마세요.
 - 대상자가 PR 작성자이면 해당 PR title/body를, review 작성자이면 review body를, review comment 작성자이면 comment body를 인용할 수 있습니다.
 - 타인이 만든 PR에 대상자가 쓴 review/comment는 유효하지만, 대상자가 만든 PR에 타인이 쓴 review/comment는 대상자의 evidence가 아닙니다.

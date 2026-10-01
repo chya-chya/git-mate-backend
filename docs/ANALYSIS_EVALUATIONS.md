@@ -24,7 +24,7 @@ Structured Outputs 통과 후에도 서버는 실제 모델 입력 payload를 �
 - author가 대소문자를 무시했을 때 target user인지
 - `sourceType`과 `targetRelation` 조합이 실제 PR/review/review comment 소유 관계와 일치하는지
 - quote가 대상자가 작성한 단일 활동에 연속해서 포함되는지
-- 구조화되지 않은 PR/GitHub 참조가 reason, improvement, example, summary에 없는지
+- 구조화되지 않은 PR/GitHub 참조가 reason, improvement, example, summary, evidence의 scoreRationale에 없는지
 - evidence가 없을 때 점수가 기본 구간 3.0~3.5인지
 
 오류에는 metric과 evidence 위치만 포함합니다. 원문, API key, provider 응답 본문은 로그에 남기지 않습니다. 검증 실패 결과는 리포트·통계에 저장하지 않고 기존 provider reconciliation 경로로 처리합니다.
@@ -33,17 +33,18 @@ Structured Outputs 통과 후에도 서버는 실제 모델 입력 payload를 �
 
 - 모델: 정확히 `gpt-5-mini`
 - baseline prompt: `analysis-v1`
-- candidate prompt: `analysis-v2-structured-evidence`
+- candidate prompt: `analysis-v3-structured-evidence-rationale`
+- retired prompt: `analysis-v1`, `analysis-v2-structured-evidence`
 - result schema: `analysis-result-v2`
 
 baseline은 구조화 평가 도입 직전 커밋 `e4368db13ffe283333a8e814da19d2888a31bc4a`의 실제 system/user prompt와 `json_object` 조건을 복원합니다. candidate는 production Structured Outputs 프롬프트와 schema/validator를 그대로 사용합니다.
 
-baseline 결과는 당시의 8개 점수·설명 JSON 스키마로 검증하고, `reason` 안의 PR 번호·permalink를 입력과 대조해 허위 PR, 대상자 활동이 전혀 없는 PR 귀속, 근거 없는 비중립 점수를 판정합니다. candidate 결과는 현재 구조화 스키마와 evidence validator로 더 강하게 판정합니다. 따라서 두 버전의 schema 통과는 각각 당시/현재 계약을 충족했다는 뜻이며, baseline을 현재 스키마에 억지로 대입해 자동 실패시키지 않습니다.
+baseline 결과는 당시의 8개 점수·설명 JSON 스키마로 검증하고, 각 역량의 `reason`·`improvement`·`example` 안의 PR 번호와 permalink를 입력 및 fixture 계약과 대조해 허위 PR, 대상자 활동이 전혀 없는 PR 귀속, 근거 없는 비중립 점수, 다른 역량의 근거 재사용을 판정합니다. legacy 스키마에는 작성자·근거 유형 필드가 없으므로 이 필드들은 입력 PR의 대상자 활동 존재 여부로 확인합니다. candidate 결과는 현재 구조화 스키마와 evidence validator로 전체 evidence 필드를 대조합니다. 따라서 두 버전의 schema 통과는 각각 당시/현재 계약을 충족했다는 뜻이며, baseline을 현재 스키마에 억지로 대입해 자동 실패시키지 않습니다.
 
 두 prompt manifest는 `src/analysis/evals/prompt-variants.ts`에 전체 template, source revision, 응답 형식, 최대 completion token과 SHA-256 checksum을 기록합니다. baseline의 source revision은 복원 대상 commit이며, candidate는 `CURRENT_CHECKOUT`으로 표시하고 실제 실행 revision은 보고서의 `executionRevision`(`GITHUB_SHA`, 명시한 로컬 revision 또는 `local-working-tree`)에 별도로 기록합니다.
 
 - baseline checksum: `b6f1cbd3195f41b292e6aca9e64b6d5b11395de899fb99c1b18382afc03c4eb6`
-- candidate checksum: `7fda1aa97f29fd64c6f7613e36d6bc8dc2557ec5e6409f3f13a186c51ba4d26a`
+- candidate checksum: `38ab87015dfb5b8a0cd5fa4fece918493077dacc54606228a5b5ff5e9e21f938`
 
 checksum은 공백을 포함한 전체 template이나 실행 조건이 바뀌면 달라집니다. 의도적으로 변경할 때는 fixture·reference output·문서와 함께 검토하고 integrity checksum을 갱신합니다. 기존 prompt version 문자열에 다른 내용을 재사용하지 않습니다.
 
@@ -56,9 +57,8 @@ checksum은 공백을 포함한 전체 template이나 실행 조건이 바뀌면
 - 안정적인 fixture ID와 target user
 - 합성 PR/review/comment 입력
 - 8개 역량의 draft 기대 점수 구간
-- evidence 필수 지표
-- 허용된 PR, 활동 유형, 작성자, target relation 목록
-- 금지 evidence 규칙
+- 8개 역량별 `mustCite`/`mustNotCite` evidence 계약
+- 계약에 기록된 PR 번호, permalink, 작성자, 활동 유형, target relation
 - 검증 위험과 태그
 - label review version/status
 
@@ -100,7 +100,7 @@ CI grader는 다음을 검사합니다.
 - 존재하지 않거나 permalink가 다른 PR
 - 타인의 활동과 source/relation 오인
 - evidence 없는 high/low 점수
-- evidence-required gate
+- 역량별 `mustCite` 누락과 `mustNotCite` 근거 재사용 gate
 - 192개 점수 구간
 - 누락 output을 포함한 고정 분모
 - fixture, reference output, prompt manifest SHA-256 integrity
@@ -117,6 +117,8 @@ reference 결과의 기계적 회귀 검사가 통과해도 실제 모델 품질
 - fabricated PR citations: unknown PR 또는 permalink mismatch evidence 위치 수, 목표 0
 - wrong-user attribution: author/quote/source relation이 대상자 활동과 맞지 않는 evidence 위치 수, 목표 0
 - unsupported claims: evidence 없이 3.0~3.5 밖의 점수를 사용한 지표 수, 목표 0
+- evidence validation failures: candidate의 결정적 evidence 검증 실패 case 수, 목표 0
+- evidence gate failures: fixture의 역량별 `mustCite`를 충족하지 못하거나 `mustNotCite` 근거를 재사용한 case 수, 목표 0
 - score-band agreement: 기대 구간에 들어간 metric / 192, 최소 154/192
 - candidate >= baseline: schema/evidence gate는 후퇴하지 않고 안전 위반 수는 증가하지 않으며 matching label 수는 같거나 많은 case, 최소 20/24
 - 평균 총 token: 24개 모두의 실제 API `usage.total_tokens` 평균, candidate/baseline 비율 1.2 이하

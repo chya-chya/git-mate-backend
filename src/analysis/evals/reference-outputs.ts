@@ -49,7 +49,7 @@ export const CHECKED_IN_REFERENCE_OUTPUTS: readonly CheckedInAnalysisOutput[] =
             '변경의 전제와 측정 결과, 실패 시 되돌림 기준을 함께 검토해 주세요.',
           evidence:
             metric === fixture.focusMetric &&
-            fixture.evidenceRequired.includes(metric) &&
+            fixture.evidenceContract[metric].mustCite.length > 0 &&
             evidence !== null
               ? [
                   {

@@ -22,7 +22,7 @@ describe('analysisResultSchema', () => {
     metadata: {
       requestedModel: 'gpt-5-mini',
       responseModel: 'gpt-5-mini-2026-08-07',
-      promptVersion: 'analysis-v2-structured-evidence',
+      promptVersion: 'analysis-v3-structured-evidence-rationale',
       schemaVersion: 'analysis-result-v2',
       generatedAt: '2026-09-28T00:00:00.000Z',
     },

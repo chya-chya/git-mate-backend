@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { ConfigService } from '@nestjs/config';
+import { ANALYSIS_METRIC_KEYS } from '../analysis-result.schema';
 import {
   ANALYSIS_GOLDEN_FIXTURES,
   ANALYSIS_GOLDEN_LABEL_REVIEW,
@@ -41,10 +42,20 @@ describe('analysis evaluation infrastructure', () => {
     for (const fixture of ANALYSIS_GOLDEN_FIXTURES) {
       expect(fixture.labelReview).toBe(ANALYSIS_GOLDEN_LABEL_REVIEW);
       expect(fixture.validationRisk.length).toBeGreaterThan(0);
-      expect(fixture.forbiddenEvidence.length).toBeGreaterThan(0);
-      expect(fixture.allowedEvidence.every((item) => item.prNumber > 0)).toBe(
+      const focusContract = fixture.evidenceContract[fixture.focusMetric];
+      expect(focusContract.mustCite).toHaveLength(
+        fixture.tags.includes('sparse-evidence') ? 0 : 1,
+      );
+      expect(focusContract.mustCite.every((item) => item.prNumber > 0)).toBe(
         true,
       );
+      for (const metric of ANALYSIS_METRIC_KEYS) {
+        const contract = fixture.evidenceContract[metric];
+        if (metric !== fixture.focusMetric) {
+          expect(contract.mustCite).toEqual([]);
+          expect(contract.mustNotCite).toEqual(focusContract.mustCite);
+        }
+      }
     }
     expect(
       ANALYSIS_GOLDEN_FIXTURES.some((fixture) =>
@@ -54,7 +65,15 @@ describe('analysis evaluation infrastructure', () => {
     const sparse = ANALYSIS_GOLDEN_FIXTURES.find((fixture) =>
       fixture.tags.includes('sparse-evidence'),
     );
-    expect(sparse).toMatchObject({ level: 'medium', evidenceRequired: [] });
+    expect(sparse).toMatchObject({ level: 'medium' });
+    expect(
+      ANALYSIS_METRIC_KEYS.every((metric) => {
+        const contract = sparse?.evidenceContract[metric];
+        return (
+          contract?.mustCite.length === 0 && contract.mustNotCite.length === 0
+        );
+      }),
+    ).toBe(true);
   });
 
   it('uses the production candidate messages and immutable prompt manifests', () => {
@@ -75,7 +94,7 @@ describe('analysis evaluation infrastructure', () => {
       },
       candidate: {
         model: 'gpt-5-mini',
-        promptVersion: 'analysis-v2-structured-evidence',
+        promptVersion: 'analysis-v3-structured-evidence-rationale',
         responseFormat: 'structured_output',
         sourceRevision: 'CURRENT_CHECKOUT',
       },

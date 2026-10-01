@@ -21,9 +21,7 @@ export interface AnalysisGoldenFixture {
   level: GoldenLevel;
   input: CollectedDataDto;
   expectedScoreBands: Record<AnalysisMetricKey, ScoreBand>;
-  evidenceRequired: readonly AnalysisMetricKey[];
-  allowedEvidence: readonly AllowedFixtureEvidence[];
-  forbiddenEvidence: readonly string[];
+  evidenceContract: Record<AnalysisMetricKey, FixtureMetricEvidenceContract>;
   validationRisk: string;
   labelReview: typeof ANALYSIS_GOLDEN_LABEL_REVIEW;
   tags: readonly string[];
@@ -35,6 +33,11 @@ export interface AllowedFixtureEvidence {
   sourceType: AnalysisEvidenceSourceType;
   targetRelation: AnalysisEvidenceRelation;
   author: string;
+}
+
+export interface FixtureMetricEvidenceContract {
+  mustCite: readonly AllowedFixtureEvidence[];
+  mustNotCite: readonly AllowedFixtureEvidence[];
 }
 
 export interface AnalysisGoldenLabelReview {
@@ -70,25 +73,40 @@ export const ANALYSIS_GOLDEN_FIXTURES: readonly AnalysisGoldenFixture[] =
         sparse,
       });
       const tags = tagsFor(index, sparse);
+      const focusEvidence = collectAllowedFixtureEvidence(input);
       return {
         id: `${metric}-${level}`,
         focusMetric: metric,
         level,
         input,
         expectedScoreBands: buildExpectedBands(metric, level),
-        evidenceRequired: sparse ? [] : [metric],
-        allowedEvidence: collectAllowedFixtureEvidence(input),
-        forbiddenEvidence: [
-          'PR numbers and permalinks not present in input',
-          'activities not authored by targetUser',
-          'quotes assembled from multiple activities',
-        ],
+        evidenceContract: buildEvidenceContract(
+          metric,
+          sparse ? [] : focusEvidence,
+        ),
         validationRisk: tags.join(', '),
         labelReview: ANALYSIS_GOLDEN_LABEL_REVIEW,
         tags,
       };
     }),
   );
+
+function buildEvidenceContract(
+  focusMetric: AnalysisMetricKey,
+  focusEvidence: readonly AllowedFixtureEvidence[],
+): Record<AnalysisMetricKey, FixtureMetricEvidenceContract> {
+  const contract = {} as Record<
+    AnalysisMetricKey,
+    FixtureMetricEvidenceContract
+  >;
+  for (const metric of ANALYSIS_METRIC_KEYS) {
+    contract[metric] =
+      metric === focusMetric
+        ? { mustCite: focusEvidence, mustNotCite: [] }
+        : { mustCite: [], mustNotCite: focusEvidence };
+  }
+  return contract;
+}
 
 const goldenRefiner = new RefinerService();
 const goldenPreprocessor = new PreprocessorService();
