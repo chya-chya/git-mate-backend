@@ -73,7 +73,7 @@ export const BASELINE_SYSTEM_PROMPT_TEMPLATE = `당신은 글로벌 탑티어 �
     "example": "PR #194에서 SSE 타이머 인터벌을 외부화하여 1차 격리는 마쳤지만, 클라이언트 동시 접속 급증 시 게이트웨이 메모리 누수나 스파이크 부하 리스크가 여전히 남아있습니다. 이를 보완하기 위해 다음 스프린트에서는 지수 백오프(Exponential Backoff)와 지터(Jitter) 알고리즘을 클라이언트 커넥션 재시도 로직에 도입하는 방향을 제안하고 싶은데, 다들 어떻게 생각하시나요?"
   }
 }
-  
+\x20\x20
 {
   "mutual_respect": { "reason": "string", "score": number, "improvement": "string", "example": "string" },
   "conflict_management": { "reason": "string", "score": number, "improvement": "string", "example": "string" },
