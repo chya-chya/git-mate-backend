@@ -1,47 +1,90 @@
-# 구조화된 분석 결과와 품질 평가
+# AI 분석 품질 평가 시스템
+
+## 목적과 범위
+
+이 저장소는 프롬프트 변경 전후를 같은 합성 입력, 같은 `gpt-5-mini`, 같은 호출 제한으로 실행하여 품질·실제 API token usage·지연 시간을 비교합니다. 일반 PR CI는 네트워크나 OpenAI API를 사용하지 않으며, 유료 평가는 수동 또는 nightly workflow에서만 실행됩니다.
+
+평가 harness는 저장소가 직접 소유합니다. 별도 OpenAI Evals 플랫폼에는 의존하지 않습니다.
 
 ## 결과 계약과 신뢰 경계
 
-분석 결과의 단일 계약은 `src/analysis/analysis-result.schema.ts`의 Zod 스키마입니다. 8개 지표와 `summary`는 모두 필수이고 모든 객체는 strict 모드입니다. 점수는 1.0~5.0의 유한한 수이며 0.5 단위만 허용합니다. 설명 문자열은 비어 있을 수 없고 길이 상한이 있으며, 근거가 없을 때 `evidence`는 빈 배열일 수 있습니다.
+결과의 단일 계약은 `src/analysis/analysis-result.schema.ts`입니다.
 
-각 지표의 `evidence`는 `prNumber`, canonical `permalink`, `author`, 단일 활동에 연속해서 포함된 `quote`로 구성됩니다. Structured Outputs가 스키마를 통과해도 신뢰하지 않습니다. 서버는 LLM에 실제 전달한 전처리 payload를 기준으로 다음을 다시 검증합니다.
+- 8개 역량과 `summary`는 모두 필수이며 모든 객체는 strict Zod schema입니다.
+- 점수는 1.0~5.0의 0.5 단위입니다.
+- 각 evidence에는 `prNumber`, canonical `permalink`, `author`, `sourceType`, `targetRelation`, 단일 활동의 연속 원문 `quote`, `scoreRationale`가 필요합니다.
+- 최종 결과의 `metadata`에는 요청 모델, provider 응답 모델, prompt version, `analysis-result-v2` schema version, 생성 시각을 기록합니다.
+- 모델에는 metadata 생성을 맡기지 않습니다. provider 응답을 검증한 뒤 서버가 metadata를 추가합니다.
 
-- PR 번호와 canonical permalink가 같은 전달 PR을 가리키는지
-- 작성자 ID가 대소문자를 무시했을 때 `targetUser`인지
-- 인용문이 대상자가 작성한 PR title/body, review body 또는 review comment body 하나에 포함되는지
-- CRLF와 연속 공백만 정규화하고 대소문자나 의미를 느슨하게 맞추지 않는지
-- `reason`, `improvement`, `example`, `summary`가 PR 번호나 GitHub URL로 구조화 검증을 우회하지 않는지
+PR 본문·review·review comment는 명령이 아닌 비신뢰 데이터입니다. 시스템 프롬프트와 `<github_data>` 경계를 분리하고, 입력 안의 지시문을 따르지 않도록 명시합니다.
 
-오류에는 metric과 evidence 위치만 포함하며 비공개 원문은 로그에 남기지 않습니다. PR, review, comment 내용은 명령이 아닌 신뢰할 수 없는 데이터로 구분하고, 프롬프트 안의 지시문을 따르지 않도록 시스템 프롬프트와 데이터 경계를 분리합니다.
+Structured Outputs 통과 후에도 서버는 실제 모델 입력 payload를 기준으로 다음을 다시 검사합니다.
 
-## 모델과 프롬프트 버전
+- PR 번호와 permalink가 같은 입력 PR을 가리키는지
+- author가 대소문자를 무시했을 때 target user인지
+- `sourceType`과 `targetRelation` 조합이 실제 PR/review/review comment 소유 관계와 일치하는지
+- quote가 대상자가 작성한 단일 활동에 연속해서 포함되는지
+- 구조화되지 않은 PR/GitHub 참조가 reason, improvement, example, summary에 없는지
+- evidence가 없을 때 점수가 기본 구간 3.0~3.5인지
 
-- 요청 모델: 고정 alias `gpt-5-mini` (override 불가)
-- 현재 프롬프트: `analysis-v2-structured-evidence`
-- 이전 프롬프트: `analysis-v1` (내용을 변경하거나 새 프롬프트로 재사용하지 않음)
+오류에는 metric과 evidence 위치만 포함합니다. 원문, API key, provider 응답 본문은 로그에 남기지 않습니다. 검증 실패 결과는 리포트·통계에 저장하지 않고 기존 provider reconciliation 경로로 처리합니다.
 
-신규 `AnalysisJob`에는 현재 모델·프롬프트 버전이 저장되고 `AnalysisReport.jobId`로 리포트와 연결됩니다. 따라서 Prisma 변경은 없습니다. 배포 전에 남아 있는 미종료 `analysis-v1` 작업은 새 프롬프트로 조용히 실행하지 않습니다. Worker가 provider를 호출하기 전에 해당 작업을 `UNSUPPORTED_ANALYSIS_VERSION`으로 최종 처리하고, 과금 checkpoint가 없다면 예약 토큰을 전부 반환합니다. 이미 provider checkpoint가 있으면 기존 reconciliation 흐름을 먼저 적용합니다.
+## 모델·프롬프트·스키마 버전
 
-프롬프트를 승격할 때는 새 불변 버전 문자열, Zod 계약·validator·24개 fixture·reference output·문서를 같은 변경에서 갱신해야 합니다. 기존 문자열의 프롬프트 내용을 바꾸면 안 됩니다.
+- 모델: 정확히 `gpt-5-mini`
+- baseline prompt: `analysis-v1`
+- candidate prompt: `analysis-v2-structured-evidence`
+- result schema: `analysis-result-v2`
 
-구현은 OpenAI의 [Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs), [GPT-5 mini](https://developers.openai.com/api/docs/models/gpt-5-mini), [evaluation best practices](https://developers.openai.com/api/docs/guides/evaluation-best-practices)를 기준으로 합니다.
+baseline은 구조화 평가 도입 직전 커밋 `e4368db13ffe283333a8e814da19d2888a31bc4a`의 실제 system/user prompt와 `json_object` 조건을 복원합니다. candidate는 production Structured Outputs 프롬프트와 schema/validator를 그대로 사용합니다.
+
+baseline 결과는 당시의 8개 점수·설명 JSON 스키마로 검증하고, `reason` 안의 PR 번호·permalink를 입력과 대조해 허위 PR, 대상자 활동이 전혀 없는 PR 귀속, 근거 없는 비중립 점수를 판정합니다. candidate 결과는 현재 구조화 스키마와 evidence validator로 더 강하게 판정합니다. 따라서 두 버전의 schema 통과는 각각 당시/현재 계약을 충족했다는 뜻이며, baseline을 현재 스키마에 억지로 대입해 자동 실패시키지 않습니다.
+
+두 prompt manifest는 `src/analysis/evals/prompt-variants.ts`에 전체 template, source revision, 응답 형식, 최대 completion token과 SHA-256 checksum을 기록합니다. baseline의 source revision은 복원 대상 commit이며, candidate는 `CURRENT_CHECKOUT`으로 표시하고 실제 실행 revision은 보고서의 `executionRevision`(`GITHUB_SHA`, 명시한 로컬 revision 또는 `local-working-tree`)에 별도로 기록합니다.
+
+- baseline checksum: `b6f1cbd3195f41b292e6aca9e64b6d5b11395de899fb99c1b18382afc03c4eb6`
+- candidate checksum: `7fda1aa97f29fd64c6f7613e36d6bc8dc2557ec5e6409f3f13a186c51ba4d26a`
+
+checksum은 공백을 포함한 전체 template이나 실행 조건이 바뀌면 달라집니다. 의도적으로 변경할 때는 fixture·reference output·문서와 함께 검토하고 integrity checksum을 갱신합니다. 기존 prompt version 문자열에 다른 내용을 재사용하지 않습니다.
 
 ## 합성 골든 데이터 24개
 
-모든 데이터는 익명 합성이며 프로덕션 사용자나 비공개 저장소 원문을 포함하지 않습니다. 각 지표마다 high/medium/low 3개를 두고, 모든 fixture에 8개 지표의 별도 기대 점수 구간, evidence 요구 지표, 태그를 둡니다. 레이블은 live output과 별도이므로 실행 결과가 덮어쓸 수 없습니다. 아직 사람의 승인을 받지 않았으며 `human-approved`로 표시하지 않습니다.
+8개 역량별 high/medium/low 한 개씩 정확히 24개를 사용합니다. 프로덕션 사용자나 비공개 저장소 데이터는 포함하지 않습니다.
 
-| 지표                       | high                            | medium                            | low                            |
-| -------------------------- | ------------------------------- | --------------------------------- | ------------------------------ |
-| mutual_respect             | mutual_respect-high             | mutual_respect-medium             | mutual_respect-low             |
-| conflict_management        | conflict_management-high        | conflict_management-medium        | conflict_management-low        |
-| logical_problem_definition | logical_problem_definition-high | logical_problem_definition-medium | logical_problem_definition-low |
-| review_guiding             | review_guiding-high             | review_guiding-medium             | review_guiding-low             |
-| documentation              | documentation-high              | documentation-medium              | documentation-low              |
-| knowledge_sharing          | knowledge_sharing-high          | knowledge_sharing-medium          | knowledge_sharing-low          |
-| technical_influence        | technical_influence-high        | technical_influence-medium        | technical_influence-low        |
-| code_stability             | code_stability-high             | code_stability-medium             | code_stability-low             |
+각 fixture는 다음을 갖습니다.
 
-24개 전반에 존재하지 않는 PR 999, 다른 사용자의 강한 활동, 타인 PR의 대상자 review/comment, 대상자 PR의 타인 comment, 근거 부족, 한영 혼합, 긴 코드 블록, 중복 문구, ID 대소문자, Markdown 링크, 프롬프트 주입, 서로 다른 작성자의 같은 문구가 분산되어 있습니다.
+- 안정적인 fixture ID와 target user
+- 합성 PR/review/comment 입력
+- 8개 역량의 draft 기대 점수 구간
+- evidence 필수 지표
+- 허용된 PR, 활동 유형, 작성자, target relation 목록
+- 금지 evidence 규칙
+- 검증 위험과 태그
+- label review version/status
+
+prompt injection, 존재하지 않는 PR 999, 타인의 강한 활동, 타인 PR의 대상자 review/comment, 대상자 PR의 타인 comment, 근거 부족, 한영 혼합, 긴 코드 블록과 review thread, Markdown 링크, 중복 quote, GitHub ID 대소문자, 유사 사용자명이 24개에 분산되어 있습니다.
+
+| 역량 | high fixture | medium fixture | low fixture |
+| --- | --- | --- | --- |
+| mutual_respect | `mutual_respect-high` | `mutual_respect-medium` | `mutual_respect-low` |
+| conflict_management | `conflict_management-high` | `conflict_management-medium` | `conflict_management-low` |
+| logical_problem_definition | `logical_problem_definition-high` | `logical_problem_definition-medium` | `logical_problem_definition-low` |
+| review_guiding | `review_guiding-high` | `review_guiding-medium` | `review_guiding-low` |
+| documentation | `documentation-high` | `documentation-medium` | `documentation-low` |
+| knowledge_sharing | `knowledge_sharing-high` | `knowledge_sharing-medium` | `knowledge_sharing-low` |
+| technical_influence | `technical_influence-high` | `technical_influence-medium` | `technical_influence-low` |
+| code_stability | `code_stability-high` | `code_stability-medium` | `code_stability-low` |
+
+현재 label 상태는 다음과 같습니다.
+
+| 항목 | 값 |
+| --- | --- |
+| version | `analysis-golden-labels-draft-v1` |
+| status | `pending-user-approval` |
+| approvedBy | 없음 |
+| approvedAt | 없음 |
+
+즉, 점수 구간은 검토용 draft이며 사람이 승인한 기준선으로 주장하지 않습니다. 승인하려면 24개 fixture의 입력·허용 evidence·192개 점수 구간을 검토한 뒤 status를 `approved`로 바꾸고 승인자와 시각을 기록하며 integrity checksum을 갱신해야 합니다.
 
 ## 비용 없는 CI grader
 
@@ -49,37 +92,76 @@
 npm run analysis:eval:ci
 ```
 
-이 명령은 OpenAI client를 만들지 않고 API key나 네트워크 없이 합성 fixture와 체크인된 reference output만 읽습니다. reference output은 grader·validator의 동작을 검증하기 위한 자료이며 실제 모델 품질 측정 결과가 아닙니다. 누락 또는 실패 사례도 24개 분모와 192개 label 분모에 남습니다.
+이 명령은 OpenAI client를 생성하거나 네트워크를 호출하지 않습니다. 체크인된 reference output은 `human-authored-evaluation-reference`이며 `modelExecuted: false`로 명시됩니다.
 
-- Schema pass rate = schema 통과 case / 24, 목표 100%
-- Fabricated PR citations = 없는 PR 또는 number/permalink 불일치 evidence 수, 목표 0
-- Wrong-user attributions = 대상자 소유가 아닌 evidence 수, 목표 0
-- Evidence validation failures = server-side validator를 통과하지 못한 case 수, 목표 0
-- Score-band agreement = 기대 구간에 든 metric label / 192, 목표 최소 154/192
-- evidence required gate = 요구된 지표의 evidence가 비었으면 실패
+CI grader는 다음을 검사합니다.
 
-표와 JSON 요약을 표준 출력에 기록하고 임계값 미달 시 non-zero로 종료합니다. 일반 PR CI에는 이 비용 없는 grader만 포함되며 OpenAI를 호출하지 않습니다.
+- 24/24 결과 schema
+- 존재하지 않거나 permalink가 다른 PR
+- 타인의 활동과 source/relation 오인
+- evidence 없는 high/low 점수
+- evidence-required gate
+- 192개 점수 구간
+- 누락 output을 포함한 고정 분모
+- fixture, reference output, prompt manifest SHA-256 integrity
 
-## 수동·nightly live 평가
+reference 결과의 기계적 회귀 검사가 통과해도 실제 모델 품질을 통과했다고 주장하지 않습니다. label 승인 전에는 `qualityClaimEligible: false`입니다.
 
-비용 확인용 dry run은 API 호출 없이 24회 예정 호출을 표시합니다.
+## baseline/candidate 실제 비교
+
+두 variant는 같은 순서의 24개 전처리 입력을 사용합니다. 호출은 순차 실행되어 concurrency가 1이고 SDK retry는 0입니다. 최대 호출 수는 baseline 24 + candidate 24 = 48입니다. 각 요청 timeout은 90초이며 workflow 전체 timeout은 45분입니다.
+
+계산식은 다음과 같습니다.
+
+- schema pass rate: schema 통과 case / 24, candidate 기준 24/24
+- fabricated PR citations: unknown PR 또는 permalink mismatch evidence 위치 수, 목표 0
+- wrong-user attribution: author/quote/source relation이 대상자 활동과 맞지 않는 evidence 위치 수, 목표 0
+- unsupported claims: evidence 없이 3.0~3.5 밖의 점수를 사용한 지표 수, 목표 0
+- score-band agreement: 기대 구간에 들어간 metric / 192, 최소 154/192
+- candidate >= baseline: schema/evidence gate는 후퇴하지 않고 안전 위반 수는 증가하지 않으며 matching label 수는 같거나 많은 case, 최소 20/24
+- 평균 총 token: 24개 모두의 실제 API `usage.total_tokens` 평균, candidate/baseline 비율 1.2 이하
+- p95 latency: 24개 latency를 오름차순 정렬하고 `ceil(0.95 × N)`번째 값을 택하는 nearest-rank 방식, candidate/baseline 비율 1.2 이하
+
+usage가 하나라도 없으면 평균 token 비교는 unavailable로 실패합니다. label이 승인되지 않은 상태에서도 실제 실행 결과는 기록할 수 있지만 전체 품질 gate는 PASS가 될 수 없습니다.
+
+## 수동 실행과 비용 통제
+
+비용 없는 계획 확인:
 
 ```bash
-npm run analysis:eval:live -- --dry-run --output .artifacts/analysis-evals/latest.json
+npm run analysis:eval:live -- --dry-run
 ```
 
-실제 평가는 두 가지 opt-in이 모두 있어야 하며 모델 override를 받지 않습니다.
+실제 실행은 사용자가 48회 호출과 비용 영향을 승인한 뒤에만 수행합니다.
 
 ```bash
 RUN_LIVE_OPENAI_EVALS=true \
 OPENAI_API_KEY=... \
-npm run analysis:eval:live -- --output .artifacts/analysis-evals/latest.json
+npm run analysis:eval:live -- \
+  --output .artifacts/analysis-evals/latest.json
 ```
 
-24개를 순차 호출하고 실패도 분모에서 제외하지 않습니다. 결과에는 요청 모델, provider 응답 모델, 프롬프트 버전, 실행 시각, case별 latency, token usage, 오류 종류와 grader 결과를 저장하며 API key와 입력 원문은 저장하지 않습니다. `.artifacts/`는 Git에서 제외됩니다. 현재 체크인된 실제 `gpt-5-mini` 기준선이 없으므로 결과에는 `baseline: unavailable`을 기록합니다. 기준선 비교 수치나 실제 품질을 생성했다고 주장하려면 별도 비용 승인을 받아 실행해야 합니다.
+두 opt-in 값이 없으면 호출하지 않고 실패합니다. 모델 override와 max-case 우회는 제공하지 않습니다. 출력 경로는 `.artifacts/analysis-evals/` 아래의 `.json`으로 제한하며 같은 이름의 Markdown 보고서도 생성합니다. 파일 mode는 0600이고 `.artifacts/`는 Git에서 제외됩니다.
 
-`.github/workflows/analysis-evals.yml`은 `workflow_dispatch`와 nightly schedule에서만 실행되며 pull request 이벤트가 없습니다. secret 누락은 구성 오류로 실패하고, JSON은 artifact로 업로드합니다. 동시 실행을 제한하고 45분 timeout을 두며 `ASYNC_ANALYSIS_ENABLED`는 `false`로 유지합니다.
+JSON에는 prompt 전체 template/checksum, variant 요약, case별 합성 output·usage·latency·오류가 들어갑니다. fixture가 익명 합성 데이터인지 코드에서 고정하며 API key는 report나 오류 출력에 포함하지 않습니다.
 
-## 해석의 한계
+## nightly workflow
 
-합성 데이터와 체크인 reference output은 validator와 평가 파이프라인의 회귀를 찾는 데 유용하지만 실제 모델의 일반화 성능, 편향, 언어별 품질을 증명하지 않습니다. live 평가도 24개 소규모 표본이므로 사람의 블라인드 검토와 실제 운영 분포를 대체하지 않습니다.
+`.github/workflows/analysis-evals.yml`은 `workflow_dispatch`와 nightly schedule만 사용합니다. PR/push trigger는 없습니다. secret이 없으면 구성 오류로 실패하며, JSON과 Markdown을 artifact로 30일 보존합니다. concurrency group은 한 실행만 허용하고 취소 대신 대기합니다.
+
+일반 PR의 `.github/workflows/analysis-ledger.yml`은 평가 소스, 스크립트, 이 문서, live workflow 변경을 모두 path filter에 포함하지만 실제 OpenAI 호출 대신 deterministic grader만 실행합니다.
+
+## 재현과 승인 절차
+
+1. `npm ci`로 lockfile 기준 의존성을 설치합니다.
+2. `npm run analysis:eval:ci`로 fixture/reference/prompt integrity를 확인합니다.
+3. `npm run analysis:eval:live -- --dry-run`에서 모델·prompt checksum·48회 호출 계획을 확인합니다.
+4. label 승인 상태와 예상 비용을 확인하고 실제 실행 승인을 받습니다.
+5. 같은 commit과 환경에서 수동 명령 또는 nightly workflow를 실행합니다.
+6. JSON의 prompt manifest, 실제 usage와 latency, Markdown 비교표를 함께 보관합니다.
+
+프롬프트나 모델을 변경할 때는 새 불변 version, 전체 prompt와 checksum, 24개 fixture/reference, 문서, 비용 승인을 같은 PR에서 검토합니다. 모델 변경은 별도 승인 없이는 금지하며 현재 평가는 계속 `gpt-5-mini`만 사용합니다.
+
+## 현재 미실행 항목과 한계
+
+이 구현 과정에서는 실제 OpenAI 평가를 실행하지 않았습니다. 따라서 실제 schema 통과율, 인용 오류, score-band agreement, baseline 대비 token, p95 latency, candidate >= baseline 기준은 모두 미측정입니다. 또한 draft labels는 사용자 승인이 필요합니다. 합성 24개는 운영 분포나 사람의 블라인드 평가를 대체하지 않습니다.
