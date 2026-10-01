@@ -78,7 +78,10 @@ describe('analysis evaluation fixtures and grader', () => {
         prNumber: 999,
         permalink: 'https://github.com/synthetic-org/quality-fixtures/pull/999',
         author: 'AnotherUser',
+        sourceType: 'pull_request',
+        targetRelation: 'target_authored_pr',
         quote: 'Invented quote',
+        scoreRationale: '존재하지 않는 합성 근거입니다.',
       },
     ];
     const replacements = CHECKED_IN_REFERENCE_OUTPUTS.map((candidate) =>
@@ -95,7 +98,10 @@ describe('analysis evaluation fixtures and grader', () => {
         prNumber: pullRequest.number,
         permalink: pullRequest.permalink,
         author: 'AnotherUser',
+        sourceType: 'pull_request',
+        targetRelation: 'target_authored_pr',
         quote: pullRequest.title,
+        scoreRationale: '다른 사용자 활동을 잘못 귀속했습니다.',
       },
     ];
     const wrongUser = gradeAnalysisOutputs(replacements);
@@ -160,5 +166,56 @@ describe('analysis evaluation fixtures and grader', () => {
       totalLabels: 8,
       errorTypes: ['UNKNOWN_PR', 'AUTHOR_MISMATCH'],
     });
+  });
+
+  it('grades the legacy baseline with its original schema and deterministic PR citation checks', () => {
+    const outputs = ANALYSIS_GOLDEN_FIXTURES.map((fixture) => {
+      const metrics = Object.fromEntries(
+        ANALYSIS_METRIC_KEYS.map((metric) => {
+          const band = fixture.expectedScoreBands[metric];
+          const needsEvidence = fixture.evidenceRequired.includes(metric);
+          return [
+            metric,
+            {
+              score: band.min,
+              reason: needsEvidence
+                ? `[PR #${fixture.input.pullRequests[0].number}](${fixture.input.pullRequests[0].permalink}) 합성 근거를 확인했습니다.`
+                : '해당 역량은 중립 구간으로 평가했습니다.',
+              improvement: '다음 검증 항목을 구체화합니다.',
+              example: '검증 결과를 동료와 공유합니다.',
+            },
+          ];
+        }),
+      );
+      return {
+        fixtureId: fixture.id,
+        output: { ...metrics, summary: '합성 baseline 평가입니다.' },
+      };
+    });
+
+    const valid = gradeAnalysisOutputs(
+      outputs,
+      ANALYSIS_GOLDEN_FIXTURES,
+      'legacy',
+    );
+    expect(valid).toMatchObject({
+      schemaPassedCases: 24,
+      scoreBandMatchingLabels: 192,
+      fabricatedPrCitations: 0,
+      wrongUserAttributions: 0,
+      passed: true,
+    });
+
+    const forged = structuredClone(outputs);
+    const forgedOutput = forged[0].output as Record<string, { reason: string }>;
+    forgedOutput.mutual_respect.reason =
+      '[PR #999](https://github.com/synthetic-org/quality-fixtures/pull/999) fabricated';
+    const invalid = gradeAnalysisOutputs(
+      forged,
+      ANALYSIS_GOLDEN_FIXTURES,
+      'legacy',
+    );
+    expect(invalid.fabricatedPrCitations).toBe(1);
+    expect(invalid.passed).toBe(false);
   });
 });

@@ -19,6 +19,13 @@ describe('analysisResultSchema', () => {
       ]),
     ),
     summary: '합성 입력에 대한 요약입니다.',
+    metadata: {
+      requestedModel: 'gpt-5-mini',
+      responseModel: 'gpt-5-mini-2026-08-07',
+      promptVersion: 'analysis-v2-structured-evidence',
+      schemaVersion: 'analysis-result-v2',
+      generatedAt: '2026-09-28T00:00:00.000Z',
+    },
   } as LlmAnalysisResult;
 
   it('accepts all eight strict metric objects and summary', () => {
@@ -74,7 +81,10 @@ describe('analysisResultSchema', () => {
               prNumber: 1,
               permalink: 'https://example.com/pull/1',
               author: 'developer',
+              sourceType: 'pull_request',
+              targetRelation: 'target_authored_pr',
               quote: 'synthetic quote',
+              scoreRationale: '합성 근거입니다.',
             },
           ],
         },

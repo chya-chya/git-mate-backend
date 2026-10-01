@@ -6,7 +6,7 @@ import { InputLimitExceededError } from '../../collection/collection-limits';
 import { CollectedDataDto } from '../../collection/types/github-api.types';
 import {
   ANALYSIS_METRIC_KEYS,
-  LlmAnalysisResult,
+  LlmAnalysisPayload,
 } from '../analysis-result.schema';
 import {
   CURRENT_ANALYSIS_EXECUTION_VERSION,
@@ -91,6 +91,14 @@ describe('LlmProviderService structured outputs', () => {
       requestedModel: 'gpt-5-mini',
       responseModel: 'gpt-5-mini',
       promptVersion: 'analysis-v2-structured-evidence',
+      result: {
+        metadata: {
+          requestedModel: 'gpt-5-mini',
+          responseModel: 'gpt-5-mini',
+          promptVersion: 'analysis-v2-structured-evidence',
+          schemaVersion: 'analysis-result-v2',
+        },
+      },
       usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
     });
     expect(parse).toHaveBeenCalledTimes(1);
@@ -228,6 +236,7 @@ describe('LlmProviderService structured outputs', () => {
       providerRequestId: 'chatcmpl_actual_123',
       usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
       reason,
+      responseModel: 'gpt-5-mini',
     });
   });
 
@@ -262,6 +271,7 @@ describe('LlmProviderService structured outputs', () => {
       providerRequestId: 'chatcmpl_actual_123',
       usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
       reason: 'INCOMPLETE_LENGTH',
+      responseModel: 'gpt-5-mini',
     });
   });
 
@@ -276,6 +286,7 @@ describe('LlmProviderService structured outputs', () => {
       providerRequestId: 'chatcmpl_actual_123',
       usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
       reason: 'SCHEMA_VALIDATION_FAILED',
+      responseModel: 'gpt-5-mini',
     });
   });
 
@@ -288,6 +299,7 @@ describe('LlmProviderService structured outputs', () => {
       usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
       reason: 'RESPONSE_PROCESSING_FAILED',
       evidenceIssues: null,
+      responseModel: 'gpt-5-mini',
     });
   });
 
@@ -320,6 +332,7 @@ describe('LlmProviderService structured outputs', () => {
       providerRequestId: 'chatcmpl_actual_123',
       usage: { totalTokens: 15 },
       reason: 'EVIDENCE_VALIDATION_FAILED',
+      responseModel: 'gpt-5-mini',
       evidenceIssues: [
         {
           code: 'UNKNOWN_PR',
@@ -378,7 +391,7 @@ describe('LlmProviderService structured outputs', () => {
     );
   });
 
-  function makeResult(): LlmAnalysisResult {
+  function makeResult(): LlmAnalysisPayload {
     return {
       ...Object.fromEntries(
         ANALYSIS_METRIC_KEYS.map((metric) => [
@@ -395,7 +408,11 @@ describe('LlmProviderService structured outputs', () => {
                       prNumber: 12,
                       permalink: 'https://github.com/owner/repository/pull/12',
                       author: 'Developer',
+                      sourceType: 'pull_request',
+                      targetRelation: 'target_authored_pr',
                       quote: 'validated target-authored explanation',
+                      scoreRationale:
+                        '대상자가 직접 작성한 설명으로 점수를 판단했습니다.',
                     },
                   ]
                 : [],
@@ -403,7 +420,7 @@ describe('LlmProviderService structured outputs', () => {
         ]),
       ),
       summary: '검증 가능한 근거만 사용했습니다.',
-    } as LlmAnalysisResult;
+    } as LlmAnalysisPayload;
   }
 
   function countMessageTokens(

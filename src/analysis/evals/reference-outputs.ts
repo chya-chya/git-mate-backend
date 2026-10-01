@@ -1,13 +1,29 @@
 import {
+  ANALYSIS_RESULT_SCHEMA_VERSION,
   ANALYSIS_METRIC_KEYS,
+  AnalysisEvidenceRelation,
+  AnalysisEvidenceSourceType,
   LlmAnalysisResult,
 } from '../analysis-result.schema';
+import {
+  ANALYSIS_MODEL_VERSION,
+  ANALYSIS_PROMPT_VERSION,
+} from '../analysis-execution-version';
 import { ANALYSIS_GOLDEN_FIXTURES } from './golden-fixtures';
 
 export interface CheckedInAnalysisOutput {
   fixtureId: string;
   output: unknown;
 }
+
+export const REFERENCE_OUTPUT_PROVENANCE = Object.freeze({
+  kind: 'human-authored-evaluation-reference' as const,
+  version: 'analysis-reference-output-v2',
+  createdAt: '2026-09-28T00:00:00.000Z',
+  modelExecuted: false,
+  description:
+    'Deterministic fixture references authored for grader regression; not OpenAI output.',
+});
 
 export const CHECKED_IN_REFERENCE_OUTPUTS: readonly CheckedInAnalysisOutput[] =
   ANALYSIS_GOLDEN_FIXTURES.map((fixture) => {
@@ -40,40 +56,67 @@ export const CHECKED_IN_REFERENCE_OUTPUTS: readonly CheckedInAnalysisOutput[] =
                     prNumber: pullRequest.number,
                     permalink: pullRequest.permalink,
                     author: fixture.input.targetUser,
-                    quote: evidence,
+                    sourceType: evidence.sourceType,
+                    targetRelation: evidence.targetRelation,
+                    quote: evidence.text,
+                    scoreRationale:
+                      '합성 원문이 해당 역량의 기대 행동 수준을 직접 보여 줍니다.',
                   },
                 ]
               : [],
         },
       ]),
-    ) as Omit<LlmAnalysisResult, 'summary'>;
+    ) as Omit<LlmAnalysisResult, 'summary' | 'metadata'>;
     return {
       fixtureId: fixture.id,
       output: {
         ...output,
         summary:
           '합성 데이터만으로 평가했으며 직접 근거가 있는 행동과 근거가 부족한 지표를 분리했습니다.',
+        metadata: {
+          requestedModel: ANALYSIS_MODEL_VERSION,
+          responseModel: 'human-authored-reference',
+          promptVersion: ANALYSIS_PROMPT_VERSION,
+          schemaVersion: ANALYSIS_RESULT_SCHEMA_VERSION,
+          generatedAt: REFERENCE_OUTPUT_PROVENANCE.createdAt,
+        },
       } satisfies LlmAnalysisResult,
     };
   });
 
 function findTargetEvidence(
   input: (typeof ANALYSIS_GOLDEN_FIXTURES)[number]['input'],
-): string | null {
+): {
+  text: string;
+  sourceType: AnalysisEvidenceSourceType;
+  targetRelation: AnalysisEvidenceRelation;
+} | null {
   const target = input.targetUser.toLocaleLowerCase('en-US');
   const pullRequest = input.pullRequests[0];
   if (pullRequest.author.toLocaleLowerCase('en-US') === target) {
-    return pullRequest.title;
+    return {
+      text: pullRequest.title,
+      sourceType: 'pull_request',
+      targetRelation: 'target_authored_pr',
+    };
   }
   for (const review of pullRequest.reviews) {
     if (review.author.toLocaleLowerCase('en-US') === target) {
-      return review.body;
+      return {
+        text: review.body,
+        sourceType: 'review',
+        targetRelation: 'target_authored_review',
+      };
     }
     const comment = review.comments.find(
       (candidate) => candidate.author.toLocaleLowerCase('en-US') === target,
     );
     if (comment) {
-      return comment.body;
+      return {
+        text: comment.body,
+        sourceType: 'review_comment',
+        targetRelation: 'target_authored_review_comment',
+      };
     }
   }
   return null;
