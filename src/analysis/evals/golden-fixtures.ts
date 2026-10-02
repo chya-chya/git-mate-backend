@@ -33,6 +33,7 @@ export interface AllowedFixtureEvidence {
   sourceType: AnalysisEvidenceSourceType;
   targetRelation: AnalysisEvidenceRelation;
   author: string;
+  quote: string;
 }
 
 export interface FixtureMetricEvidenceContract {
@@ -265,6 +266,7 @@ function collectAllowedFixtureEvidence(
         sourceType: 'pull_request',
         targetRelation: 'target_authored_pr',
         author: input.targetUser,
+        quote: pullRequest.title,
       });
     }
     for (const review of pullRequest.reviews) {
@@ -275,6 +277,7 @@ function collectAllowedFixtureEvidence(
           sourceType: 'review',
           targetRelation: 'target_authored_review',
           author: input.targetUser,
+          quote: review.body,
         });
       }
       for (const comment of review.comments) {
@@ -285,6 +288,7 @@ function collectAllowedFixtureEvidence(
             sourceType: 'review_comment',
             targetRelation: 'target_authored_review_comment',
             author: input.targetUser,
+            quote: comment.body,
           });
         }
       }

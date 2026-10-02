@@ -6,6 +6,7 @@ import {
 } from '../analysis-result.schema';
 import {
   EvidenceValidationIssue,
+  normalizeEvidenceText,
   validateAnalysisEvidence,
 } from '../evidence-validator';
 import { z } from 'zod';
@@ -332,7 +333,7 @@ function validateStructuredFixtureEvidence(
       contract.mustCite.length > 0 &&
       !evidence.some((item) =>
         contract.mustCite.some((required) =>
-          matchesStructuredEvidence(item, required),
+          matchesRequiredStructuredEvidence(item, required),
         ),
       )
     ) {
@@ -341,7 +342,7 @@ function validateStructuredFixtureEvidence(
     if (
       evidence.some((item) =>
         contract.mustNotCite.some((forbidden) =>
-          matchesStructuredEvidence(item, forbidden),
+          matchesStructuredEvidenceActivity(item, forbidden),
         ),
       )
     ) {
@@ -351,7 +352,7 @@ function validateStructuredFixtureEvidence(
   return [...errors];
 }
 
-function matchesStructuredEvidence(
+function matchesStructuredEvidenceActivity(
   actual: AnalysisEvidence,
   expected: AllowedFixtureEvidence,
 ): boolean {
@@ -362,6 +363,17 @@ function matchesStructuredEvidence(
       expected.author.toLocaleLowerCase('en-US') &&
     actual.sourceType === expected.sourceType &&
     actual.targetRelation === expected.targetRelation
+  );
+}
+
+function matchesRequiredStructuredEvidence(
+  actual: AnalysisEvidence,
+  expected: AllowedFixtureEvidence,
+): boolean {
+  return (
+    matchesStructuredEvidenceActivity(actual, expected) &&
+    normalizeEvidenceText(actual.quote) ===
+      normalizeEvidenceText(expected.quote)
   );
 }
 

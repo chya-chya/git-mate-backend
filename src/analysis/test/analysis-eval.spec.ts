@@ -71,7 +71,7 @@ describe('analysis evaluation fixtures and grader', () => {
     const reference = structuredClone(CHECKED_IN_REFERENCE_OUTPUTS[0]);
     const output = reference.output as Record<
       string,
-      { evidence: Array<Record<string, unknown>> }
+      { evidence: Array<Record<string, unknown> & { quote: string }> }
     >;
     output[fixture.focusMetric].evidence = [
       {
@@ -128,12 +128,12 @@ describe('analysis evaluation fixtures and grader', () => {
     expect(summary.passed).toBe(false);
   });
 
-  it('rejects reusing focus evidence for an unrelated structured metric', () => {
+  it('rejects reusing focus evidence with a changed quote for an unrelated metric', () => {
     const fixture = ANALYSIS_GOLDEN_FIXTURES[0];
     const reference = structuredClone(CHECKED_IN_REFERENCE_OUTPUTS[0]);
     const output = reference.output as Record<
       string,
-      { evidence: Array<Record<string, unknown>> }
+      { evidence: Array<Record<string, unknown> & { quote: string }> }
     >;
     const unrelatedMetric = ANALYSIS_METRIC_KEYS.find(
       (metric) => metric !== fixture.focusMetric,
@@ -142,6 +142,9 @@ describe('analysis evaluation fixtures and grader', () => {
     output[unrelatedMetric!].evidence = structuredClone(
       output[fixture.focusMetric].evidence,
     );
+    output[unrelatedMetric!].evidence[0].quote = output[
+      unrelatedMetric!
+    ].evidence[0].quote.slice(0, 1);
 
     const summary = gradeAnalysisOutputs(
       CHECKED_IN_REFERENCE_OUTPUTS.map((candidate) =>
@@ -153,6 +156,38 @@ describe('analysis evaluation fixtures and grader', () => {
     expect(summary.cases[0].errorTypes).toContain('FIXTURE_FORBIDDEN_EVIDENCE');
     expect(summary.passed).toBe(false);
   });
+
+  it.each([
+    ['a one-character quote', (quote: string) => quote.slice(0, 1)],
+    ['an unrelated quote fragment', () => 'Synthetic'],
+  ])(
+    'rejects %s even when the general evidence validator accepts it',
+    (_description, mutateQuote) => {
+      const fixture = ANALYSIS_GOLDEN_FIXTURES[0];
+      const reference = structuredClone(CHECKED_IN_REFERENCE_OUTPUTS[0]);
+      const output = reference.output as Record<
+        string,
+        { evidence: Array<{ quote: string }> }
+      >;
+      const requiredQuote =
+        fixture.evidenceContract[fixture.focusMetric].mustCite[0].quote;
+      output[fixture.focusMetric].evidence[0].quote =
+        mutateQuote(requiredQuote);
+
+      const summary = gradeAnalysisOutputs(
+        CHECKED_IN_REFERENCE_OUTPUTS.map((candidate) =>
+          candidate.fixtureId === fixture.id ? reference : candidate,
+        ),
+      );
+
+      expect(summary.evidenceValidationFailures).toBe(0);
+      expect(summary.evidenceGateFailures).toBe(1);
+      expect(summary.cases[0].errorTypes).toContain(
+        'FIXTURE_REQUIRED_EVIDENCE_MISSING',
+      );
+      expect(summary.passed).toBe(false);
+    },
+  );
 
   it('grades safe evidence issues without retaining a schema-valid model output', () => {
     const failedFixture = ANALYSIS_GOLDEN_FIXTURES[0];

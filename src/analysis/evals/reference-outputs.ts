@@ -1,8 +1,6 @@
 import {
   ANALYSIS_RESULT_SCHEMA_VERSION,
   ANALYSIS_METRIC_KEYS,
-  AnalysisEvidenceRelation,
-  AnalysisEvidenceSourceType,
   LlmAnalysisResult,
 } from '../analysis-result.schema';
 import {
@@ -27,8 +25,8 @@ export const REFERENCE_OUTPUT_PROVENANCE = Object.freeze({
 
 export const CHECKED_IN_REFERENCE_OUTPUTS: readonly CheckedInAnalysisOutput[] =
   ANALYSIS_GOLDEN_FIXTURES.map((fixture) => {
-    const pullRequest = fixture.input.pullRequests[0];
-    const evidence = findTargetEvidence(fixture.input);
+    const requiredEvidence =
+      fixture.evidenceContract[fixture.focusMetric].mustCite[0] ?? null;
     const scores = {
       high: 4.5,
       medium: 3.5,
@@ -50,15 +48,15 @@ export const CHECKED_IN_REFERENCE_OUTPUTS: readonly CheckedInAnalysisOutput[] =
           evidence:
             metric === fixture.focusMetric &&
             fixture.evidenceContract[metric].mustCite.length > 0 &&
-            evidence !== null
+            requiredEvidence !== null
               ? [
                   {
-                    prNumber: pullRequest.number,
-                    permalink: pullRequest.permalink,
-                    author: fixture.input.targetUser,
-                    sourceType: evidence.sourceType,
-                    targetRelation: evidence.targetRelation,
-                    quote: evidence.text,
+                    prNumber: requiredEvidence.prNumber,
+                    permalink: requiredEvidence.permalink,
+                    author: requiredEvidence.author,
+                    sourceType: requiredEvidence.sourceType,
+                    targetRelation: requiredEvidence.targetRelation,
+                    quote: requiredEvidence.quote,
                     scoreRationale:
                       '합성 원문이 해당 역량의 기대 행동 수준을 직접 보여 줍니다.',
                   },
@@ -83,41 +81,3 @@ export const CHECKED_IN_REFERENCE_OUTPUTS: readonly CheckedInAnalysisOutput[] =
       } satisfies LlmAnalysisResult,
     };
   });
-
-function findTargetEvidence(
-  input: (typeof ANALYSIS_GOLDEN_FIXTURES)[number]['input'],
-): {
-  text: string;
-  sourceType: AnalysisEvidenceSourceType;
-  targetRelation: AnalysisEvidenceRelation;
-} | null {
-  const target = input.targetUser.toLocaleLowerCase('en-US');
-  const pullRequest = input.pullRequests[0];
-  if (pullRequest.author.toLocaleLowerCase('en-US') === target) {
-    return {
-      text: pullRequest.title,
-      sourceType: 'pull_request',
-      targetRelation: 'target_authored_pr',
-    };
-  }
-  for (const review of pullRequest.reviews) {
-    if (review.author.toLocaleLowerCase('en-US') === target) {
-      return {
-        text: review.body,
-        sourceType: 'review',
-        targetRelation: 'target_authored_review',
-      };
-    }
-    const comment = review.comments.find(
-      (candidate) => candidate.author.toLocaleLowerCase('en-US') === target,
-    );
-    if (comment) {
-      return {
-        text: comment.body,
-        sourceType: 'review_comment',
-        targetRelation: 'target_authored_review_comment',
-      };
-    }
-  }
-  return null;
-}

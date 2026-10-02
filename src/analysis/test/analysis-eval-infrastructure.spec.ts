@@ -49,6 +49,9 @@ describe('analysis evaluation infrastructure', () => {
       expect(focusContract.mustCite.every((item) => item.prNumber > 0)).toBe(
         true,
       );
+      expect(
+        focusContract.mustCite.every((item) => item.quote.length > 1),
+      ).toBe(true);
       for (const metric of ANALYSIS_METRIC_KEYS) {
         const contract = fixture.evidenceContract[metric];
         if (metric !== fixture.focusMetric) {

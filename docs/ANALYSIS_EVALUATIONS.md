@@ -58,7 +58,7 @@ checksum은 공백을 포함한 전체 template이나 실행 조건이 바뀌면
 - 합성 PR/review/comment 입력
 - 8개 역량의 draft 기대 점수 구간
 - 8개 역량별 `mustCite`/`mustNotCite` evidence 계약
-- 계약에 기록된 PR 번호, permalink, 작성자, 활동 유형, target relation
+- 계약에 기록된 PR 번호, permalink, 작성자, 활동 유형, target relation, 사람이 의도한 합성 근거 quote
 - 검증 위험과 태그
 - label review version/status
 
@@ -100,7 +100,7 @@ CI grader는 다음을 검사합니다.
 - 존재하지 않거나 permalink가 다른 PR
 - 타인의 활동과 source/relation 오인
 - evidence 없는 high/low 점수
-- 역량별 `mustCite` 누락과 `mustNotCite` 근거 재사용 gate
+- 역량별 `mustCite`의 활동 identity 및 정확한 quote 누락과 `mustNotCite` 활동 근거 재사용 gate
 - 192개 점수 구간
 - 누락 output을 포함한 고정 분모
 - fixture, reference output, prompt manifest SHA-256 integrity
@@ -118,7 +118,7 @@ reference 결과의 기계적 회귀 검사가 통과해도 실제 모델 품질
 - wrong-user attribution: author/quote/source relation이 대상자 활동과 맞지 않는 evidence 위치 수, 목표 0
 - unsupported claims: evidence 없이 3.0~3.5 밖의 점수를 사용한 지표 수, 목표 0
 - evidence validation failures: candidate의 결정적 evidence 검증 실패 case 수, 목표 0
-- evidence gate failures: fixture의 역량별 `mustCite`를 충족하지 못하거나 `mustNotCite` 근거를 재사용한 case 수, 목표 0
+- evidence gate failures: fixture의 역량별 `mustCite` 활동과 정확한 quote를 충족하지 못하거나 `mustNotCite` 활동 근거를 quote 변형으로 재사용한 case 수, 목표 0
 - score-band agreement: 기대 구간에 들어간 metric / 192, 최소 154/192
 - candidate >= baseline: schema/evidence gate는 후퇴하지 않고 안전 위반 수는 증가하지 않으며 matching label 수는 같거나 많은 case, 최소 20/24
 - 평균 총 token: 24개 모두의 실제 API `usage.total_tokens` 평균, candidate/baseline 비율 1.2 이하
