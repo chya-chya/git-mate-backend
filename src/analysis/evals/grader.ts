@@ -485,9 +485,13 @@ function countEvidenceFailures(
 function countUnsupportedClaims(
   evidenceIssues: readonly EvidenceValidationIssue[],
 ): number {
-  return evidenceIssues.filter(
-    (issue) => issue.code === 'UNSUPPORTED_SCORE_WITHOUT_EVIDENCE',
-  ).length;
+  return uniqueEvidencePositions(
+    evidenceIssues.filter(
+      (issue) =>
+        issue.code === 'UNSUPPORTED_SCORE_WITHOUT_EVIDENCE' ||
+        issue.code === 'QUOTE_TOO_SHORT',
+    ),
+  ).size;
 }
 
 function countMatchingLabels(

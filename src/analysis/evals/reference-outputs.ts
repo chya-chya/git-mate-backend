@@ -16,7 +16,7 @@ export interface CheckedInAnalysisOutput {
 
 export const REFERENCE_OUTPUT_PROVENANCE = Object.freeze({
   kind: 'human-authored-evaluation-reference' as const,
-  version: 'analysis-reference-output-v2',
+  version: 'analysis-reference-output-v3',
   createdAt: '2026-09-28T00:00:00.000Z',
   modelExecuted: false,
   description:

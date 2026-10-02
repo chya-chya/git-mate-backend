@@ -1,7 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { ConfigService } from '@nestjs/config';
-import { ANALYSIS_METRIC_KEYS } from '../analysis-result.schema';
+import {
+  ANALYSIS_METRIC_KEYS,
+  MIN_ANALYSIS_EVIDENCE_QUOTE_LENGTH,
+} from '../analysis-result.schema';
 import {
   ANALYSIS_GOLDEN_FIXTURES,
   ANALYSIS_GOLDEN_LABEL_REVIEW,
@@ -50,7 +53,9 @@ describe('analysis evaluation infrastructure', () => {
         true,
       );
       expect(
-        focusContract.mustCite.every((item) => item.quote.length > 1),
+        focusContract.mustCite.every(
+          (item) => item.quote.length >= MIN_ANALYSIS_EVIDENCE_QUOTE_LENGTH,
+        ),
       ).toBe(true);
       for (const metric of ANALYSIS_METRIC_KEYS) {
         const contract = fixture.evidenceContract[metric];
@@ -97,7 +102,7 @@ describe('analysis evaluation infrastructure', () => {
       },
       candidate: {
         model: 'gpt-5-mini',
-        promptVersion: 'analysis-v3-structured-evidence-rationale',
+        promptVersion: 'analysis-v4-minimum-evidence-quote',
         responseFormat: 'structured_output',
         sourceRevision: 'CURRENT_CHECKOUT',
       },

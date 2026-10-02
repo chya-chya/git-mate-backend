@@ -80,7 +80,7 @@ describe('analysis evaluation fixtures and grader', () => {
         author: 'AnotherUser',
         sourceType: 'pull_request',
         targetRelation: 'target_authored_pr',
-        quote: 'Invented quote',
+        quote: 'Invented evidence quote that is not present',
         scoreRationale: '존재하지 않는 합성 근거입니다.',
       },
     ];
@@ -142,9 +142,9 @@ describe('analysis evaluation fixtures and grader', () => {
     output[unrelatedMetric!].evidence = structuredClone(
       output[fixture.focusMetric].evidence,
     );
-    output[unrelatedMetric!].evidence[0].quote = output[
-      unrelatedMetric!
-    ].evidence[0].quote.slice(0, 1);
+    output[unrelatedMetric!].evidence[0].quote = `${
+      output[unrelatedMetric!].evidence[0].quote
+    } altered`;
 
     const summary = gradeAnalysisOutputs(
       CHECKED_IN_REFERENCE_OUTPUTS.map((candidate) =>
@@ -157,37 +157,79 @@ describe('analysis evaluation fixtures and grader', () => {
     expect(summary.passed).toBe(false);
   });
 
-  it.each([
-    ['a one-character quote', (quote: string) => quote.slice(0, 1)],
-    ['an unrelated quote fragment', () => 'Synthetic'],
-  ])(
-    'rejects %s even when the general evidence validator accepts it',
-    (_description, mutateQuote) => {
-      const fixture = ANALYSIS_GOLDEN_FIXTURES[0];
-      const reference = structuredClone(CHECKED_IN_REFERENCE_OUTPUTS[0]);
-      const output = reference.output as Record<
-        string,
-        { evidence: Array<{ quote: string }> }
-      >;
-      const requiredQuote =
-        fixture.evidenceContract[fixture.focusMetric].mustCite[0].quote;
-      output[fixture.focusMetric].evidence[0].quote =
-        mutateQuote(requiredQuote);
+  it('rejects a short quote at the structured output schema gate', () => {
+    const fixture = ANALYSIS_GOLDEN_FIXTURES[0];
+    const reference = structuredClone(CHECKED_IN_REFERENCE_OUTPUTS[0]);
+    const output = reference.output as Record<
+      string,
+      { evidence: Array<{ quote: string }> }
+    >;
+    const requiredQuote =
+      fixture.evidenceContract[fixture.focusMetric].mustCite[0].quote;
+    output[fixture.focusMetric].evidence[0].quote = requiredQuote.slice(0, 1);
 
-      const summary = gradeAnalysisOutputs(
-        CHECKED_IN_REFERENCE_OUTPUTS.map((candidate) =>
-          candidate.fixtureId === fixture.id ? reference : candidate,
-        ),
-      );
+    const summary = gradeAnalysisOutputs(
+      CHECKED_IN_REFERENCE_OUTPUTS.map((candidate) =>
+        candidate.fixtureId === fixture.id ? reference : candidate,
+      ),
+    );
 
-      expect(summary.evidenceValidationFailures).toBe(0);
-      expect(summary.evidenceGateFailures).toBe(1);
-      expect(summary.cases[0].errorTypes).toContain(
+    expect(summary.schemaPassedCases).toBe(23);
+    expect(summary.evidenceGateFailures).toBe(1);
+    expect(summary.cases[0].errorTypes).toContain('SCHEMA_INVALID');
+    expect(summary.passed).toBe(false);
+  });
+
+  it('rejects an unrelated quote even when it meets the schema length', () => {
+    const fixture = ANALYSIS_GOLDEN_FIXTURES[0];
+    const reference = structuredClone(CHECKED_IN_REFERENCE_OUTPUTS[0]);
+    const output = reference.output as Record<
+      string,
+      { evidence: Array<{ quote: string }> }
+    >;
+    output[fixture.focusMetric].evidence[0].quote =
+      'Synthetic unrelated evidence fragment';
+
+    const summary = gradeAnalysisOutputs(
+      CHECKED_IN_REFERENCE_OUTPUTS.map((candidate) =>
+        candidate.fixtureId === fixture.id ? reference : candidate,
+      ),
+    );
+
+    expect(summary.evidenceValidationFailures).toBe(1);
+    expect(summary.evidenceGateFailures).toBe(1);
+    expect(summary.cases[0].errorTypes).toEqual(
+      expect.arrayContaining([
+        'QUOTE_NOT_OWNED',
         'FIXTURE_REQUIRED_EVIDENCE_MISSING',
-      );
-      expect(summary.passed).toBe(false);
-    },
-  );
+      ]),
+    );
+    expect(summary.passed).toBe(false);
+  });
+
+  it('counts a defensive short-quote validation issue as unsupported evidence', () => {
+    const failedFixture = ANALYSIS_GOLDEN_FIXTURES[0];
+    const outputs: AnalysisEvalInput[] = CHECKED_IN_REFERENCE_OUTPUTS.slice(
+      1,
+    ).map((candidate) => ({ ...candidate }));
+    outputs.push({
+      fixtureId: failedFixture.id,
+      evidenceIssues: [
+        {
+          code: 'QUOTE_TOO_SHORT',
+          metric: failedFixture.focusMetric,
+          evidenceIndex: 0,
+        },
+      ],
+    });
+
+    const summary = gradeAnalysisOutputs(outputs);
+
+    expect(summary.unsupportedClaims).toBe(1);
+    expect(summary.evidenceValidationFailures).toBe(1);
+    expect(summary.evidenceGateFailures).toBe(1);
+    expect(summary.passed).toBe(false);
+  });
 
   it('grades safe evidence issues without retaining a schema-valid model output', () => {
     const failedFixture = ANALYSIS_GOLDEN_FIXTURES[0];

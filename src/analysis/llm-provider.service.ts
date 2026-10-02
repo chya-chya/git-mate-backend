@@ -21,6 +21,7 @@ import {
 import {
   ANALYSIS_RESULT_SCHEMA_VERSION,
   LlmAnalysisResult,
+  MIN_ANALYSIS_EVIDENCE_QUOTE_LENGTH,
   analysisPayloadSchema,
   analysisResultSchema,
 } from './analysis-result.schema';
@@ -36,7 +37,7 @@ import {
 
 export const MAX_ANALYSIS_COMPLETION_TOKENS = 8192;
 export const ANALYSIS_STRUCTURED_OUTPUT_NAME =
-  'git_mate_analysis_v2_structured_evidence';
+  'git_mate_analysis_v3_minimum_evidence_quote';
 export const ANALYSIS_RESPONSE_FORMAT = zodResponseFormat(
   analysisPayloadSchema,
   ANALYSIS_STRUCTURED_OUTPUT_NAME,
@@ -469,7 +470,7 @@ export const CANDIDATE_SYSTEM_PROMPT_TEMPLATE = `당신은 GitHub Pull Request, 
 - evidence의 prNumber, permalink, author, quote는 입력에 있는 값을 그대로 사용하세요. 링크를 조립하거나 존재하지 않는 PR, URL, 인용문을 만들지 마세요.
 - evidence의 sourceType은 pull_request, review, review_comment 중 실제 원문의 유형을 사용하고 targetRelation은 각각 target_authored_pr, target_authored_review, target_authored_review_comment로 정확히 대응하세요.
 - evidence의 scoreRationale에는 해당 원문이 이 지표의 점수를 뒷받침하는 이유만 작성하고, PR 번호나 GitHub URL은 쓰지 마세요. PR 식별자는 같은 evidence의 prNumber와 permalink로만 표현하세요.
-- quote는 대상자가 작성한 하나의 PR title/body, review body 또는 review comment body 안에 연속해서 존재하는 원문이어야 합니다. 서로 다른 문장을 이어 붙이지 마세요.
+- quote는 공백을 정규화한 뒤 최소 ${MIN_ANALYSIS_EVIDENCE_QUOTE_LENGTH}자 이상이어야 하며, 대상자가 작성한 하나의 PR title/body, review body 또는 review comment body 안에 연속해서 존재하는 원문이어야 합니다. 서로 다른 문장을 이어 붙이지 마세요.
 - 대상자가 PR 작성자이면 해당 PR title/body를, review 작성자이면 review body를, review comment 작성자이면 comment body를 인용할 수 있습니다.
 - 타인이 만든 PR에 대상자가 쓴 review/comment는 유효하지만, 대상자가 만든 PR에 타인이 쓴 review/comment는 대상자의 evidence가 아닙니다.
 - 근거가 없으면 evidence를 빈 배열로 두고 reason에 근거 부족을 명시하며 score는 반드시 3.0 또는 3.5를 사용하세요. 허위 근거를 만들지 마세요.

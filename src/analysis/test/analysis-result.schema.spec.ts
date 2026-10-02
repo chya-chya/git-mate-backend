@@ -1,6 +1,7 @@
 import {
   ANALYSIS_METRIC_KEYS,
   LlmAnalysisResult,
+  MIN_ANALYSIS_EVIDENCE_QUOTE_LENGTH,
   analysisResultSchema,
 } from '../analysis-result.schema';
 
@@ -22,8 +23,8 @@ describe('analysisResultSchema', () => {
     metadata: {
       requestedModel: 'gpt-5-mini',
       responseModel: 'gpt-5-mini-2026-08-07',
-      promptVersion: 'analysis-v3-structured-evidence-rationale',
-      schemaVersion: 'analysis-result-v2',
+      promptVersion: 'analysis-v4-minimum-evidence-quote',
+      schemaVersion: 'analysis-result-v3',
       generatedAt: '2026-09-28T00:00:00.000Z',
     },
   } as LlmAnalysisResult;
@@ -83,7 +84,27 @@ describe('analysisResultSchema', () => {
               author: 'developer',
               sourceType: 'pull_request',
               targetRelation: 'target_authored_pr',
-              quote: 'synthetic quote',
+              quote: 'synthetic evidence quote',
+              scoreRationale: '합성 근거입니다.',
+            },
+          ],
+        },
+      }),
+    ],
+    [
+      'evidence quote below the minimum length',
+      () => ({
+        ...valid,
+        mutual_respect: {
+          ...valid.mutual_respect,
+          evidence: [
+            {
+              prNumber: 1,
+              permalink: 'https://github.com/owner/repo/pull/1',
+              author: 'developer',
+              sourceType: 'pull_request',
+              targetRelation: 'target_authored_pr',
+              quote: 'a'.repeat(MIN_ANALYSIS_EVIDENCE_QUOTE_LENGTH - 1),
               scoreRationale: '합성 근거입니다.',
             },
           ],

@@ -96,7 +96,7 @@ describe('live analysis baseline/candidate evaluation', () => {
         providerRequestId: `chatcmpl_candidate_${fixtureIndex}`,
         requestedModel: 'gpt-5-mini',
         responseModel: 'gpt-5-mini-snapshot',
-        promptVersion: 'analysis-v3-structured-evidence-rationale',
+        promptVersion: 'analysis-v4-minimum-evidence-quote',
         schemaVersion: output.metadata.schemaVersion,
         generatedAt: output.metadata.generatedAt,
         usage: { promptTokens: 7, completionTokens: 5, totalTokens: 12 },

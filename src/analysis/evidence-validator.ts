@@ -5,6 +5,7 @@ import {
   AnalysisEvidenceSourceType,
   AnalysisMetricKey,
   LlmAnalysisPayload,
+  MIN_ANALYSIS_EVIDENCE_QUOTE_LENGTH,
 } from './analysis-result.schema';
 
 export type EvidenceValidationIssueCode =
@@ -12,6 +13,7 @@ export type EvidenceValidationIssueCode =
   | 'PERMALINK_MISMATCH'
   | 'AUTHOR_MISMATCH'
   | 'SOURCE_RELATION_MISMATCH'
+  | 'QUOTE_TOO_SHORT'
   | 'QUOTE_NOT_OWNED'
   | 'UNSUPPORTED_SCORE_WITHOUT_EVIDENCE'
   | 'UNSTRUCTURED_REFERENCE';
@@ -101,8 +103,10 @@ export function validateAnalysisEvidence(
 
       const ownedActivities = collectOwnedActivities(pullRequest, targetUser);
       const normalizedQuote = normalizeEvidenceText(evidence.quote);
+      if (normalizedQuote.length < MIN_ANALYSIS_EVIDENCE_QUOTE_LENGTH) {
+        issues.push({ code: 'QUOTE_TOO_SHORT', metric, evidenceIndex });
+      }
       if (
-        normalizedQuote.length === 0 ||
         !ownedActivities.some(
           (activity) =>
             activity.sourceType === evidence.sourceType &&

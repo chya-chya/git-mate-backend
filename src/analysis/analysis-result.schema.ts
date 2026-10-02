@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
-export const ANALYSIS_RESULT_SCHEMA_VERSION = 'analysis-result-v2';
+export const ANALYSIS_RESULT_SCHEMA_VERSION = 'analysis-result-v3';
+export const MIN_ANALYSIS_EVIDENCE_QUOTE_LENGTH = 20;
 
 export const ANALYSIS_METRIC_KEYS = [
   'mutual_respect',
@@ -38,7 +39,7 @@ export const analysisEvidenceSchema = z
     author: z.string().trim().min(1).max(100),
     sourceType: analysisEvidenceSourceTypeSchema,
     targetRelation: analysisEvidenceRelationSchema,
-    quote: z.string().trim().min(1).max(2000),
+    quote: z.string().trim().min(MIN_ANALYSIS_EVIDENCE_QUOTE_LENGTH).max(2000),
     scoreRationale: z.string().trim().min(1).max(1000),
   })
   .strict();

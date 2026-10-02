@@ -3,6 +3,7 @@ import {
   ANALYSIS_METRIC_KEYS,
   AnalysisEvidence,
   LlmAnalysisPayload,
+  MIN_ANALYSIS_EVIDENCE_QUOTE_LENGTH,
 } from '../analysis-result.schema';
 import { validateAnalysisEvidence } from '../evidence-validator';
 
@@ -202,6 +203,24 @@ describe('validateAnalysisEvidence', () => {
       code: 'UNSUPPORTED_SCORE_WITHOUT_EVIDENCE',
       metric: 'mutual_respect',
       evidenceIndex: null,
+    });
+  });
+
+  it('rejects an owned quote below the minimum evidence length', () => {
+    const result = makeResult({
+      prNumber: 10,
+      permalink: 'https://github.com/owner/repo/pull/10',
+      author: 'TargetDev',
+      quote: 'Target title',
+    });
+
+    expect('Target title'.length).toBeLessThan(
+      MIN_ANALYSIS_EVIDENCE_QUOTE_LENGTH,
+    );
+    expect(validateAnalysisEvidence(result, data)).toContainEqual({
+      code: 'QUOTE_TOO_SHORT',
+      metric: 'mutual_respect',
+      evidenceIndex: 0,
     });
   });
 

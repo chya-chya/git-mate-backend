@@ -12,8 +12,8 @@
 
 - 8개 역량과 `summary`는 모두 필수이며 모든 객체는 strict Zod schema입니다.
 - 점수는 1.0~5.0의 0.5 단위입니다.
-- 각 evidence에는 `prNumber`, canonical `permalink`, `author`, `sourceType`, `targetRelation`, 단일 활동의 연속 원문 `quote`, `scoreRationale`가 필요합니다.
-- 최종 결과의 `metadata`에는 요청 모델, provider 응답 모델, prompt version, `analysis-result-v2` schema version, 생성 시각을 기록합니다.
+- 각 evidence에는 `prNumber`, canonical `permalink`, `author`, `sourceType`, `targetRelation`, 공백 정규화 후 최소 20자인 단일 활동의 연속 원문 `quote`, `scoreRationale`가 필요합니다.
+- 최종 결과의 `metadata`에는 요청 모델, provider 응답 모델, prompt version, `analysis-result-v3` schema version, 생성 시각을 기록합니다.
 - 모델에는 metadata 생성을 맡기지 않습니다. provider 응답을 검증한 뒤 서버가 metadata를 추가합니다.
 
 PR 본문·review·review comment는 명령이 아닌 비신뢰 데이터입니다. 시스템 프롬프트와 `<github_data>` 경계를 분리하고, 입력 안의 지시문을 따르지 않도록 명시합니다.
@@ -23,7 +23,7 @@ Structured Outputs 통과 후에도 서버는 실제 모델 입력 payload를 �
 - PR 번호와 permalink가 같은 입력 PR을 가리키는지
 - author가 대소문자를 무시했을 때 target user인지
 - `sourceType`과 `targetRelation` 조합이 실제 PR/review/review comment 소유 관계와 일치하는지
-- quote가 대상자가 작성한 단일 활동에 연속해서 포함되는지
+- quote가 공백 정규화 후 최소 20자이며 대상자가 작성한 단일 활동에 연속해서 포함되는지
 - 구조화되지 않은 PR/GitHub 참조가 reason, improvement, example, summary, evidence의 scoreRationale에 없는지
 - evidence가 없을 때 점수가 기본 구간 3.0~3.5인지
 
@@ -33,9 +33,9 @@ Structured Outputs 통과 후에도 서버는 실제 모델 입력 payload를 �
 
 - 모델: 정확히 `gpt-5-mini`
 - baseline prompt: `analysis-v1`
-- candidate prompt: `analysis-v3-structured-evidence-rationale`
-- retired prompt: `analysis-v1`, `analysis-v2-structured-evidence`
-- result schema: `analysis-result-v2`
+- candidate prompt: `analysis-v4-minimum-evidence-quote`
+- retired prompt: `analysis-v1`, `analysis-v2-structured-evidence`, `analysis-v3-structured-evidence-rationale`
+- result schema: `analysis-result-v3`
 
 baseline은 구조화 평가 도입 직전 커밋 `e4368db13ffe283333a8e814da19d2888a31bc4a`의 실제 system/user prompt와 `json_object` 조건을 복원합니다. candidate는 production Structured Outputs 프롬프트와 schema/validator를 그대로 사용합니다.
 
@@ -44,7 +44,7 @@ baseline 결과는 당시의 8개 점수·설명 JSON 스키마로 검증하고,
 두 prompt manifest는 `src/analysis/evals/prompt-variants.ts`에 전체 template, source revision, 응답 형식, 최대 completion token과 SHA-256 checksum을 기록합니다. baseline의 source revision은 복원 대상 commit이며, candidate는 `CURRENT_CHECKOUT`으로 표시하고 실제 실행 revision은 보고서의 `executionRevision`(`GITHUB_SHA`, 명시한 로컬 revision 또는 `local-working-tree`)에 별도로 기록합니다.
 
 - baseline checksum: `b6f1cbd3195f41b292e6aca9e64b6d5b11395de899fb99c1b18382afc03c4eb6`
-- candidate checksum: `38ab87015dfb5b8a0cd5fa4fece918493077dacc54606228a5b5ff5e9e21f938`
+- candidate checksum: `087df75828355ab92310bd6e8c84e234f104464bd9ade36a31cabc98ed303a4a`
 
 checksum은 공백을 포함한 전체 template이나 실행 조건이 바뀌면 달라집니다. 의도적으로 변경할 때는 fixture·reference output·문서와 함께 검토하고 integrity checksum을 갱신합니다. 기존 prompt version 문자열에 다른 내용을 재사용하지 않습니다.
 
@@ -116,7 +116,7 @@ reference 결과의 기계적 회귀 검사가 통과해도 실제 모델 품질
 - schema pass rate: schema 통과 case / 24, candidate 기준 24/24
 - fabricated PR citations: unknown PR 또는 permalink mismatch evidence 위치 수, 목표 0
 - wrong-user attribution: author/quote/source relation이 대상자 활동과 맞지 않는 evidence 위치 수, 목표 0
-- unsupported claims: evidence 없이 3.0~3.5 밖의 점수를 사용한 지표 수, 목표 0
+- unsupported claims: evidence 없이 3.0~3.5 밖의 점수를 사용하거나 최소 길이 미만 quote로 점수를 뒷받침한 evidence 위치 수, 목표 0
 - evidence validation failures: candidate의 결정적 evidence 검증 실패 case 수, 목표 0
 - evidence gate failures: fixture의 역량별 `mustCite` 활동과 정확한 quote를 충족하지 못하거나 `mustNotCite` 활동 근거를 quote 변형으로 재사용한 case 수, 목표 0
 - score-band agreement: 기대 구간에 들어간 metric / 192, 최소 154/192
