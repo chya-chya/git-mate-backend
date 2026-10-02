@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - '.github/workflows/analysis-ledger.yml'
+      - '.github/workflows/analysis-evals.yml'
       - 'prisma/**'
       - 'src/analysis/**'
       - 'src/analysis-job/**'
@@ -13,6 +14,9 @@ on:
       - 'test/**'
       - 'docker-compose.yml'
       - 'scripts/localstack/**'
+      - 'scripts/analysis-eval-ci.ts'
+      - 'scripts/analysis-eval-live.ts'
+      - 'docs/ANALYSIS_EVALUATIONS.md'
       - 'package.json'
       - 'package-lock.json'
 

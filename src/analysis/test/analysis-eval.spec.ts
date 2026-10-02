@@ -71,14 +71,17 @@ describe('analysis evaluation fixtures and grader', () => {
     const reference = structuredClone(CHECKED_IN_REFERENCE_OUTPUTS[0]);
     const output = reference.output as Record<
       string,
-      { evidence: Array<Record<string, unknown>> }
+      { evidence: Array<Record<string, unknown> & { quote: string }> }
     >;
     output[fixture.focusMetric].evidence = [
       {
         prNumber: 999,
         permalink: 'https://github.com/synthetic-org/quality-fixtures/pull/999',
         author: 'AnotherUser',
-        quote: 'Invented quote',
+        sourceType: 'pull_request',
+        targetRelation: 'target_authored_pr',
+        quote: 'Invented evidence quote that is not present',
+        scoreRationale: '존재하지 않는 합성 근거입니다.',
       },
     ];
     const replacements = CHECKED_IN_REFERENCE_OUTPUTS.map((candidate) =>
@@ -95,7 +98,10 @@ describe('analysis evaluation fixtures and grader', () => {
         prNumber: pullRequest.number,
         permalink: pullRequest.permalink,
         author: 'AnotherUser',
+        sourceType: 'pull_request',
+        targetRelation: 'target_authored_pr',
         quote: pullRequest.title,
+        scoreRationale: '다른 사용자 활동을 잘못 귀속했습니다.',
       },
     ];
     const wrongUser = gradeAnalysisOutputs(replacements);
@@ -119,6 +125,109 @@ describe('analysis evaluation fixtures and grader', () => {
     const summary = gradeAnalysisOutputs(replacements);
     expect(summary.evidenceValidationFailures).toBe(1);
     expect(summary.cases[0].evidencePassed).toBe(false);
+    expect(summary.passed).toBe(false);
+  });
+
+  it('rejects reusing focus evidence with a changed quote for an unrelated metric', () => {
+    const fixture = ANALYSIS_GOLDEN_FIXTURES[0];
+    const reference = structuredClone(CHECKED_IN_REFERENCE_OUTPUTS[0]);
+    const output = reference.output as Record<
+      string,
+      { evidence: Array<Record<string, unknown> & { quote: string }> }
+    >;
+    const unrelatedMetric = ANALYSIS_METRIC_KEYS.find(
+      (metric) => metric !== fixture.focusMetric,
+    );
+    expect(unrelatedMetric).toBeDefined();
+    output[unrelatedMetric!].evidence = structuredClone(
+      output[fixture.focusMetric].evidence,
+    );
+    output[unrelatedMetric!].evidence[0].quote = `${
+      output[unrelatedMetric!].evidence[0].quote
+    } altered`;
+
+    const summary = gradeAnalysisOutputs(
+      CHECKED_IN_REFERENCE_OUTPUTS.map((candidate) =>
+        candidate.fixtureId === fixture.id ? reference : candidate,
+      ),
+    );
+
+    expect(summary.evidenceGateFailures).toBe(1);
+    expect(summary.cases[0].errorTypes).toContain('FIXTURE_FORBIDDEN_EVIDENCE');
+    expect(summary.passed).toBe(false);
+  });
+
+  it('rejects a short quote at the structured output schema gate', () => {
+    const fixture = ANALYSIS_GOLDEN_FIXTURES[0];
+    const reference = structuredClone(CHECKED_IN_REFERENCE_OUTPUTS[0]);
+    const output = reference.output as Record<
+      string,
+      { evidence: Array<{ quote: string }> }
+    >;
+    const requiredQuote =
+      fixture.evidenceContract[fixture.focusMetric].mustCite[0].quote;
+    output[fixture.focusMetric].evidence[0].quote = requiredQuote.slice(0, 1);
+
+    const summary = gradeAnalysisOutputs(
+      CHECKED_IN_REFERENCE_OUTPUTS.map((candidate) =>
+        candidate.fixtureId === fixture.id ? reference : candidate,
+      ),
+    );
+
+    expect(summary.schemaPassedCases).toBe(23);
+    expect(summary.evidenceGateFailures).toBe(1);
+    expect(summary.cases[0].errorTypes).toContain('SCHEMA_INVALID');
+    expect(summary.passed).toBe(false);
+  });
+
+  it('rejects an unrelated quote even when it meets the schema length', () => {
+    const fixture = ANALYSIS_GOLDEN_FIXTURES[0];
+    const reference = structuredClone(CHECKED_IN_REFERENCE_OUTPUTS[0]);
+    const output = reference.output as Record<
+      string,
+      { evidence: Array<{ quote: string }> }
+    >;
+    output[fixture.focusMetric].evidence[0].quote =
+      'Synthetic unrelated evidence fragment';
+
+    const summary = gradeAnalysisOutputs(
+      CHECKED_IN_REFERENCE_OUTPUTS.map((candidate) =>
+        candidate.fixtureId === fixture.id ? reference : candidate,
+      ),
+    );
+
+    expect(summary.evidenceValidationFailures).toBe(1);
+    expect(summary.evidenceGateFailures).toBe(1);
+    expect(summary.cases[0].errorTypes).toEqual(
+      expect.arrayContaining([
+        'QUOTE_NOT_OWNED',
+        'FIXTURE_REQUIRED_EVIDENCE_MISSING',
+      ]),
+    );
+    expect(summary.passed).toBe(false);
+  });
+
+  it('counts a defensive short-quote validation issue as unsupported evidence', () => {
+    const failedFixture = ANALYSIS_GOLDEN_FIXTURES[0];
+    const outputs: AnalysisEvalInput[] = CHECKED_IN_REFERENCE_OUTPUTS.slice(
+      1,
+    ).map((candidate) => ({ ...candidate }));
+    outputs.push({
+      fixtureId: failedFixture.id,
+      evidenceIssues: [
+        {
+          code: 'QUOTE_TOO_SHORT',
+          metric: failedFixture.focusMetric,
+          evidenceIndex: 0,
+        },
+      ],
+    });
+
+    const summary = gradeAnalysisOutputs(outputs);
+
+    expect(summary.unsupportedClaims).toBe(1);
+    expect(summary.evidenceValidationFailures).toBe(1);
+    expect(summary.evidenceGateFailures).toBe(1);
     expect(summary.passed).toBe(false);
   });
 
@@ -160,5 +269,72 @@ describe('analysis evaluation fixtures and grader', () => {
       totalLabels: 8,
       errorTypes: ['UNKNOWN_PR', 'AUTHOR_MISMATCH'],
     });
+  });
+
+  it('grades the legacy baseline with its original schema and deterministic PR citation checks', () => {
+    const outputs = ANALYSIS_GOLDEN_FIXTURES.map((fixture) => {
+      const metrics = Object.fromEntries(
+        ANALYSIS_METRIC_KEYS.map((metric) => {
+          const band = fixture.expectedScoreBands[metric];
+          const needsEvidence =
+            fixture.evidenceContract[metric].mustCite.length > 0;
+          return [
+            metric,
+            {
+              score: band.min,
+              reason: needsEvidence
+                ? `[PR #${fixture.input.pullRequests[0].number}](${fixture.input.pullRequests[0].permalink}) 합성 근거를 확인했습니다.`
+                : '해당 역량은 중립 구간으로 평가했습니다.',
+              improvement: '다음 검증 항목을 구체화합니다.',
+              example: '검증 결과를 동료와 공유합니다.',
+            },
+          ];
+        }),
+      );
+      return {
+        fixtureId: fixture.id,
+        output: { ...metrics, summary: '합성 baseline 평가입니다.' },
+      };
+    });
+
+    const valid = gradeAnalysisOutputs(
+      outputs,
+      ANALYSIS_GOLDEN_FIXTURES,
+      'legacy',
+    );
+    expect(valid).toMatchObject({
+      schemaPassedCases: 24,
+      scoreBandMatchingLabels: 192,
+      fabricatedPrCitations: 0,
+      wrongUserAttributions: 0,
+      passed: true,
+    });
+
+    const reused = structuredClone(outputs);
+    const reusedOutput = reused[0].output as Record<string, { reason: string }>;
+    reusedOutput.conflict_management.reason =
+      reusedOutput.mutual_respect.reason;
+    const reusedSummary = gradeAnalysisOutputs(
+      reused,
+      ANALYSIS_GOLDEN_FIXTURES,
+      'legacy',
+    );
+    expect(reusedSummary.evidenceGateFailures).toBe(1);
+    expect(reusedSummary.cases[0].errorTypes).toContain(
+      'FIXTURE_FORBIDDEN_EVIDENCE',
+    );
+    expect(reusedSummary.passed).toBe(false);
+
+    const forged = structuredClone(outputs);
+    const forgedOutput = forged[0].output as Record<string, { reason: string }>;
+    forgedOutput.mutual_respect.reason =
+      '[PR #999](https://github.com/synthetic-org/quality-fixtures/pull/999) fabricated';
+    const invalid = gradeAnalysisOutputs(
+      forged,
+      ANALYSIS_GOLDEN_FIXTURES,
+      'legacy',
+    );
+    expect(invalid.fabricatedPrCitations).toBe(1);
+    expect(invalid.passed).toBe(false);
   });
 });

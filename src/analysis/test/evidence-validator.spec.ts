@@ -1,7 +1,9 @@
 import { CollectedDataDto } from '../../collection/types/github-api.types';
 import {
   ANALYSIS_METRIC_KEYS,
-  LlmAnalysisResult,
+  AnalysisEvidence,
+  LlmAnalysisPayload,
+  MIN_ANALYSIS_EVIDENCE_QUOTE_LENGTH,
 } from '../analysis-result.schema';
 import { validateAnalysisEvidence } from '../evidence-validator';
 
@@ -160,6 +162,68 @@ describe('validateAnalysisEvidence', () => {
     );
   });
 
+  it('rejects PR references inside evidence score rationale', () => {
+    const result = makeResult({
+      prNumber: 10,
+      permalink: 'https://github.com/owner/repo/pull/10',
+      author: 'TargetDev',
+      quote: 'Target title',
+      scoreRationale: '입력에 없는 PR #999의 성과까지 반영했습니다.',
+    });
+
+    expect(validateAnalysisEvidence(result, data)).toContainEqual({
+      code: 'UNSTRUCTURED_REFERENCE',
+      metric: 'mutual_respect',
+      evidenceIndex: 0,
+    });
+  });
+
+  it('rejects a source type and target relation that do not correspond', () => {
+    const result = makeResult({
+      prNumber: 10,
+      permalink: 'https://github.com/owner/repo/pull/10',
+      author: 'TargetDev',
+      quote: 'Target title',
+      sourceType: 'pull_request',
+      targetRelation: 'target_authored_review',
+    });
+
+    expect(validateAnalysisEvidence(result, data)).toContainEqual({
+      code: 'SOURCE_RELATION_MISMATCH',
+      metric: 'mutual_respect',
+      evidenceIndex: 0,
+    });
+  });
+
+  it('rejects high or low scores when no owned evidence exists', () => {
+    const result = makeResult();
+    result.mutual_respect.score = 5;
+
+    expect(validateAnalysisEvidence(result, data)).toContainEqual({
+      code: 'UNSUPPORTED_SCORE_WITHOUT_EVIDENCE',
+      metric: 'mutual_respect',
+      evidenceIndex: null,
+    });
+  });
+
+  it('rejects an owned quote below the minimum evidence length', () => {
+    const result = makeResult({
+      prNumber: 10,
+      permalink: 'https://github.com/owner/repo/pull/10',
+      author: 'TargetDev',
+      quote: 'Target title',
+    });
+
+    expect('Target title'.length).toBeLessThan(
+      MIN_ANALYSIS_EVIDENCE_QUOTE_LENGTH,
+    );
+    expect(validateAnalysisEvidence(result, data)).toContainEqual({
+      code: 'QUOTE_TOO_SHORT',
+      metric: 'mutual_respect',
+      evidenceIndex: 0,
+    });
+  });
+
   it.each([
     ['bare PR number', '검토 결과는 #999에서 확인했습니다.'],
     [
@@ -205,7 +269,31 @@ describe('validateAnalysisEvidence', () => {
     permalink: string;
     author: string;
     quote: string;
-  }): LlmAnalysisResult {
+    sourceType?: AnalysisEvidence['sourceType'];
+    targetRelation?: AnalysisEvidence['targetRelation'];
+    scoreRationale?: string;
+  }): LlmAnalysisPayload {
+    const normalizedEvidence = evidence
+      ? {
+          ...evidence,
+          sourceType:
+            evidence.sourceType ??
+            (evidence.prNumber === 11
+              ? 'review'
+              : evidence.quote.includes('comment')
+                ? 'review_comment'
+                : 'pull_request'),
+          targetRelation:
+            evidence.targetRelation ??
+            (evidence.prNumber === 11
+              ? 'target_authored_review'
+              : evidence.quote.includes('comment')
+                ? 'target_authored_review_comment'
+                : 'target_authored_pr'),
+          scoreRationale:
+            evidence.scoreRationale ?? '합성 원문으로 점수를 판단했습니다.',
+        }
+      : undefined;
     return {
       ...Object.fromEntries(
         ANALYSIS_METRIC_KEYS.map((metric) => [
@@ -215,11 +303,14 @@ describe('validateAnalysisEvidence', () => {
             reason: '직접 근거를 평가했습니다.',
             improvement: '검증 기준을 보강해야 합니다.',
             example: '측정 결과를 함께 검토해 주세요.',
-            evidence: metric === 'mutual_respect' && evidence ? [evidence] : [],
+            evidence:
+              metric === 'mutual_respect' && normalizedEvidence
+                ? [normalizedEvidence]
+                : [],
           },
         ]),
       ),
       summary: '구조화된 근거만 사용했습니다.',
-    } as LlmAnalysisResult;
+    } as LlmAnalysisPayload;
   }
 });

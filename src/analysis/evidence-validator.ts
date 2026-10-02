@@ -1,15 +1,21 @@
 import { CollectedDataDto } from '../collection/types/github-api.types';
 import {
   ANALYSIS_METRIC_KEYS,
+  AnalysisEvidenceRelation,
+  AnalysisEvidenceSourceType,
   AnalysisMetricKey,
-  LlmAnalysisResult,
+  LlmAnalysisPayload,
+  MIN_ANALYSIS_EVIDENCE_QUOTE_LENGTH,
 } from './analysis-result.schema';
 
 export type EvidenceValidationIssueCode =
   | 'UNKNOWN_PR'
   | 'PERMALINK_MISMATCH'
   | 'AUTHOR_MISMATCH'
+  | 'SOURCE_RELATION_MISMATCH'
+  | 'QUOTE_TOO_SHORT'
   | 'QUOTE_NOT_OWNED'
+  | 'UNSUPPORTED_SCORE_WITHOUT_EVIDENCE'
   | 'UNSTRUCTURED_REFERENCE';
 
 export interface EvidenceValidationIssue {
@@ -29,7 +35,7 @@ const UNSTRUCTURED_REFERENCE_PATTERN =
   /(?:(?:https?:\/\/)?(?:www\.)?github\.com(?:\/[^\s)]*)?|\b[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#\d+\b|(?<![\p{L}\p{N}_])#\d+\b|\b(?:PR|pull request)\s*#?\d+\b|\d+\s*번\s*(?:PR|pull request)(?![A-Za-z0-9_]))/iu;
 
 export function validateAnalysisEvidence(
-  result: LlmAnalysisResult,
+  result: LlmAnalysisPayload,
   data: CollectedDataDto,
 ): readonly EvidenceValidationIssue[] {
   const issues: EvidenceValidationIssue[] = [];
@@ -38,6 +44,17 @@ export function validateAnalysisEvidence(
 
   for (const metric of ANALYSIS_METRIC_KEYS) {
     const evaluation = result[metric];
+    if (
+      evaluation.evidence.length === 0 &&
+      evaluation.score !== 3 &&
+      evaluation.score !== 3.5
+    ) {
+      issues.push({
+        code: 'UNSUPPORTED_SCORE_WITHOUT_EVIDENCE',
+        metric,
+        evidenceIndex: null,
+      });
+    }
     for (const narrative of [
       evaluation.reason,
       evaluation.improvement,
@@ -54,6 +71,13 @@ export function validateAnalysisEvidence(
     }
 
     evaluation.evidence.forEach((evidence, evidenceIndex) => {
+      if (UNSTRUCTURED_REFERENCE_PATTERN.test(evidence.scoreRationale)) {
+        issues.push({
+          code: 'UNSTRUCTURED_REFERENCE',
+          metric,
+          evidenceIndex,
+        });
+      }
       const pullRequest = pullRequests.get(evidence.prNumber);
       if (!pullRequest) {
         issues.push({ code: 'UNKNOWN_PR', metric, evidenceIndex });
@@ -67,12 +91,27 @@ export function validateAnalysisEvidence(
         return;
       }
 
+      const expectedRelation = RELATION_BY_SOURCE_TYPE[evidence.sourceType];
+      if (evidence.targetRelation !== expectedRelation) {
+        issues.push({
+          code: 'SOURCE_RELATION_MISMATCH',
+          metric,
+          evidenceIndex,
+        });
+        return;
+      }
+
       const ownedActivities = collectOwnedActivities(pullRequest, targetUser);
       const normalizedQuote = normalizeEvidenceText(evidence.quote);
+      if (normalizedQuote.length < MIN_ANALYSIS_EVIDENCE_QUOTE_LENGTH) {
+        issues.push({ code: 'QUOTE_TOO_SHORT', metric, evidenceIndex });
+      }
       if (
-        normalizedQuote.length === 0 ||
-        !ownedActivities.some((activity) =>
-          normalizeEvidenceText(activity).includes(normalizedQuote),
+        !ownedActivities.some(
+          (activity) =>
+            activity.sourceType === evidence.sourceType &&
+            activity.targetRelation === evidence.targetRelation &&
+            normalizeEvidenceText(activity.text).includes(normalizedQuote),
         )
       ) {
         issues.push({ code: 'QUOTE_NOT_OWNED', metric, evidenceIndex });
@@ -92,7 +131,7 @@ export function validateAnalysisEvidence(
 }
 
 export function assertValidAnalysisEvidence(
-  result: LlmAnalysisResult,
+  result: LlmAnalysisPayload,
   data: CollectedDataDto,
 ): void {
   const issues = validateAnalysisEvidence(result, data);
@@ -108,20 +147,54 @@ export function normalizeEvidenceText(value: string): string {
 function collectOwnedActivities(
   pullRequest: CollectedDataDto['pullRequests'][number],
   targetUser: string,
-): string[] {
-  const activities: string[] = [];
+): OwnedActivity[] {
+  const activities: OwnedActivity[] = [];
   if (pullRequest.author.toLocaleLowerCase('en-US') === targetUser) {
-    activities.push(pullRequest.title, pullRequest.body);
+    activities.push(
+      {
+        sourceType: 'pull_request',
+        targetRelation: 'target_authored_pr',
+        text: pullRequest.title,
+      },
+      {
+        sourceType: 'pull_request',
+        targetRelation: 'target_authored_pr',
+        text: pullRequest.body,
+      },
+    );
   }
   for (const review of pullRequest.reviews) {
     if (review.author.toLocaleLowerCase('en-US') === targetUser) {
-      activities.push(review.body);
+      activities.push({
+        sourceType: 'review',
+        targetRelation: 'target_authored_review',
+        text: review.body,
+      });
     }
     for (const comment of review.comments) {
       if (comment.author.toLocaleLowerCase('en-US') === targetUser) {
-        activities.push(comment.body);
+        activities.push({
+          sourceType: 'review_comment',
+          targetRelation: 'target_authored_review_comment',
+          text: comment.body,
+        });
       }
     }
   }
   return activities;
+}
+
+const RELATION_BY_SOURCE_TYPE: Record<
+  AnalysisEvidenceSourceType,
+  AnalysisEvidenceRelation
+> = {
+  pull_request: 'target_authored_pr',
+  review: 'target_authored_review',
+  review_comment: 'target_authored_review_comment',
+};
+
+interface OwnedActivity {
+  sourceType: AnalysisEvidenceSourceType;
+  targetRelation: AnalysisEvidenceRelation;
+  text: string;
 }
