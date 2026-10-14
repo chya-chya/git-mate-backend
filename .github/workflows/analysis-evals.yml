@@ -29,7 +29,7 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: test -n "$OPENAI_API_KEY"
-      - name: Run all 24 synthetic live evaluations
+      - name: Run 24 baseline and 24 candidate synthetic evaluations
         env:
           RUN_LIVE_OPENAI_EVALS: 'true'
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -39,6 +39,8 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: analysis-eval-${{ github.run_id }}
-          path: .artifacts/analysis-evals/latest.json
+          path: |
+            .artifacts/analysis-evals/latest.json
+            .artifacts/analysis-evals/latest.md
           if-no-files-found: error
           retention-days: 30
