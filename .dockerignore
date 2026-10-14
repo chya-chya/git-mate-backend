@@ -1,10 +1,18 @@
 node_modules
 dist
+cdk.out
+coverage
+.artifacts
 .git
+.github
 .env
 npm-debug.log
 docker-compose.yml
 Dockerfile
+infra
+docs
+test
+src/**/test
 
 # Keep GitHub App private keys out of the Docker build context.
 certs/*.pem

@@ -1,0 +1,61 @@
+name: Async analysis infrastructure
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/async-analysis-infra.yml'
+      - 'infra/**'
+      - 'cdk.json'
+      - 'Dockerfile.lambda'
+      - 'Dockerfile.background'
+      - 'src/analysis-job/**'
+      - 'src/analysis-worker/**'
+      - 'src/collection/collection.controller.ts'
+      - 'scripts/deploy_async_analysis.sh'
+      - 'docs/ASYNC_ANALYSIS_OPERATIONS.md'
+      - 'docs/SQS_ANALYSIS_JOBS.md'
+      - 'docs/adr/0001-asynchronous-analysis-pipeline.md'
+      - 'README.md'
+      - 'package.json'
+      - 'package-lock.json'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/async-analysis-infra.yml'
+      - 'infra/**'
+      - 'cdk.json'
+      - 'Dockerfile.lambda'
+      - 'Dockerfile.background'
+      - 'src/analysis-job/**'
+      - 'src/analysis-worker/**'
+      - 'src/collection/collection.controller.ts'
+      - 'scripts/deploy_async_analysis.sh'
+      - 'docs/ASYNC_ANALYSIS_OPERATIONS.md'
+      - 'docs/SQS_ANALYSIS_JOBS.md'
+      - 'docs/adr/0001-asynchronous-analysis-pipeline.md'
+      - 'README.md'
+      - 'package.json'
+      - 'package-lock.json'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npm run lint
+      - run: git diff --exit-code
+      - run: npm run build
+      - run: npm run test -- --runInBand
+      - run: npm run infra:check
+      - run: docker build --check -f Dockerfile.lambda .
+      - run: docker build --check -f Dockerfile.background .

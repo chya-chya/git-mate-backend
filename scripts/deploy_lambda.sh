@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # AWS Lambda Deployment Script (Container Image)
+# Legacy single-API deployment only. Use deploy_async_analysis.sh for the
+# CDK-managed production API, Worker, Reconciler, queues, and monitoring.
 
 set -euo pipefail
 
