@@ -1,13 +1,12 @@
 # ADR-0001: SQS FIFO 기반 비동기 분석 파이프라인
 
-- 상태: **제안(Proposed)**
+- 상태: **승인 및 구현(Accepted / Implemented)**
 - 작성일: 2026-07-21
 - 결정 대상: GitHub 데이터 수집 및 LLM 분석 실행 방식
 - 후속 구현: AnalysisJob 모델, Job API, SQS 발행/복구, Worker, CDK/모니터링
 
-> 이 문서는 설계 검토를 위한 ADR이다. 이 PR에서는 애플리케이션 코드, Prisma 스키마,
-> 데이터베이스 및 AWS 리소스를 변경하지 않는다. 아래 Prisma 코드는 다음 PR에서 적용할
-> **예상안**이며, 이 문서가 승인된 뒤 별도 마이그레이션으로 구현한다.
+> AnalysisJob, 공개 Job API, Worker와 증분 수집은 선행 PR에서 구현되었고,
+> `codex/async-analysis-infra`에서 CDK 인프라와 production 기능 플래그를 활성화한다.
 
 ## 1. 배경과 현재 문제
 
@@ -136,16 +135,16 @@ SQS FIFO의 deduplication ID 추적 시간은 5분이다. 이 시간이 지난 �
 
 초기 인프라 권장값은 다음과 같다.
 
-- Worker Lambda timeout: 10분
-- SQS visibility timeout: 60분(함수 timeout의 6배)
+- Worker Lambda timeout: 5분
+- SQS visibility timeout: 30분(함수 timeout의 6배)
 - batch size: 1
 - `ReportBatchItemFailures`: 활성화
 - source queue retention: 4일
 - FIFO DLQ retention: 14일
 - `maxReceiveCount`: 5
 
-분석 시간이 10분에 가까워지면 timeout을 바로 늘리기보다 GitHub 수집량 제한 또는 분석
-단계 분할을 먼저 검토한다.
+분석 시간이 5분 timeout에 가까워지면 timeout을 바로 늘리기보다 GitHub 수집량 제한 또는
+분석 단계 분할을 먼저 검토한다.
 
 ## 7. Job 상태 전이
 
@@ -588,12 +587,12 @@ CloudWatch에 다음 지표와 경보를 구성한다.
 대상은 `POST /collection/sync/:githubRepoId`다. 비용 조회 API와 기존 리포트 조회 API는 이
 폐기 대상에 포함하지 않는다.
 
-| 목표일     | 단계             | 동작                                                                                  |
-| ---------- | ---------------- | ------------------------------------------------------------------------------------- |
-| 2026-08-15 | 병행 운영 시작   | 비동기 Job API를 배포하고 내부/테스트 사용자부터 사용                                 |
-| 2026-09-01 | 프론트 기본 전환 | 신규 분석은 Job API 사용. 기존 API에 `Deprecation`, `Sunset`, 새 API `Link` 헤더 추가 |
-| 2026-10-01 | 폐기 판정        | 최근 30일 기존 API 호출 0건, 프론트 100% 전환, Job SLO 충족 여부 확인                 |
-| 2026-10-15 | 제거 목표        | 조건 충족 시 기존 API를 제거. 미충족 시 사유와 새 일정을 이 ADR 후속 기록에 남김      |
+| 시점 | 단계 | 동작 |
+| --- | --- | --- |
+| 인프라 배포일 | 병행 운영 시작 | 비동기 Job API를 활성화하고 기존 API에 `Deprecation`과 successor `Link` 헤더 추가 |
+| 배포 후 14일 | 프론트 기본 전환 | 신규 분석은 Job API 사용, 동기 API 호출량과 Job SLO 비교 |
+| 배포 후 30일 | 폐기 판정 | 최근 30일 기존 API 호출 0건, 프론트 100% 전환, Job SLO 충족 여부 확인 |
+| 판정 승인 후 | 제거 | 조건 충족과 별도 승인 후 기존 API 제거. 미충족 시 사유와 새 일정을 후속 기록 |
 
 폐기 기간에는 기존 API의 요청·응답 계약을 바꾸지 않는다. 내부 구현을 비동기로 바꾸면서
 기존 `200 + CollectedDataDto` 응답을 `202`로 바꾸는 것은 호환이 아니므로 금지한다.
@@ -602,13 +601,13 @@ CloudWatch에 다음 지표와 경보를 구성한다.
 
 ## 16. 구현 PR 순서와 승인 경계
 
-1. **현재 PR — ADR**: 결정과 계약만 검토하며 코드·DB를 변경하지 않는다.
-2. **AnalysisJob DB 모델**: 승인된 예상 모델과 마이그레이션을 별도 PR로 적용한다.
-3. **Job API**: DTO, JWT/소유권, idempotency, 목록/상태 조회를 구현한다.
-4. **SQS 발행과 복구**: Job outbox publisher와 예약 복구기를 구현한다.
-5. **Analysis Worker**: claim, lease, 토큰 예약, 파이프라인, 정산을 구현한다.
-6. **GitHub 증분 수집 / AI 검증**: 별도 PR에서 단계 체크포인트와 품질 평가를 강화한다.
-7. **CDK·모니터링·전환**: 큐, DLQ, Lambda, 경보와 기존 API 폐기 헤더를 적용한다.
+1. **ADR**: 결정과 계약을 승인했다.
+2. **AnalysisJob DB 모델**: 모델과 migration을 적용했다.
+3. **Job API**: DTO, JWT/소유권, idempotency, 목록/상태 조회를 구현했다.
+4. **SQS 발행과 복구**: Job outbox publisher와 예약 복구기를 구현했다.
+5. **Analysis Worker**: claim, lease, 토큰 예약, 파이프라인, 정산을 구현했다.
+6. **GitHub 증분 수집 / AI 검증**: 단계 checkpoint와 품질 평가를 강화했다.
+7. **CDK·모니터링·전환**: 큐, DLQ, Lambda, 경보와 기존 API deprecated 표시를 적용한다.
 
 Prisma 모델 PR은 다음 내용을 포함해야 한다.
 

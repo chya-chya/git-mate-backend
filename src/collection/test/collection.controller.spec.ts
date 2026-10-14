@@ -1,4 +1,4 @@
-import { PATH_METADATA } from '@nestjs/common/constants';
+import { HEADERS_METADATA, PATH_METADATA } from '@nestjs/common/constants';
 import { CollectionController } from '../collection.controller';
 import { CollectionService } from '../collection.service';
 
@@ -49,5 +49,23 @@ describe('CollectionController', () => {
         CollectionController.prototype.estimate,
       ),
     ).toBe('estimate/:githubRepoId');
+  });
+
+  it('marks the synchronous analysis route as deprecated with a successor', () => {
+    const headers = Reflect.getMetadata(
+      HEADERS_METADATA,
+      // eslint-disable-next-line @typescript-eslint/unbound-method
+      CollectionController.prototype.sync,
+    ) as Array<{ name: string; value: string }>;
+
+    expect(headers).toEqual(
+      expect.arrayContaining([
+        { name: 'Deprecation', value: 'true' },
+        {
+          name: 'Link',
+          value: '</analysis/jobs>; rel="successor-version"',
+        },
+      ]),
+    );
   });
 });
