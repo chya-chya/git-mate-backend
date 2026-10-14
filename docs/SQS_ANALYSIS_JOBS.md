@@ -18,7 +18,7 @@
 | `ANALYSIS_JOB_PUBLISH_MAX_ATTEMPTS` | 기본 `5` |
 | `ANALYSIS_JOB_REPUBLISH_AFTER_SECONDS` | 기본 `60` |
 | `ANALYSIS_JOB_RECONCILE_BATCH_SIZE` | 기본 `20` |
-| `ASYNC_ANALYSIS_ENABLED` | 기본 `false`; 이번 단계에서는 켜지 않음 |
+| `ASYNC_ANALYSIS_ENABLED` | 애플리케이션 로컬 기본은 fail-closed `false`; production CDK 스택은 `true`로 설정 |
 
 기능 플래그가 꺼져 있고 SQS 설정이 없어도 API는 시작됩니다. 이미 접수된 Job을 복구하는
 reconciler는 기능 플래그와 독립적이며, 실제 발행 시 설정이 없으면 안전한 설정 오류를
@@ -132,5 +132,6 @@ RUN_SQS_INTEGRATION_TESTS=true npm test -- --runInBand \
   src/analysis-job/test/sqs-analysis-job.integration.spec.ts
 ```
 
-`ASYNC_ANALYSIS_ENABLED` 기본값은 계속 `false`입니다. 공개 API 접수 기능을 켜지 않아도 이미
-큐에 들어간 Job 복구를 위해 handler 또는 Worker service로 직접 전달된 메시지는 처리합니다.
+`ASYNC_ANALYSIS_ENABLED`는 설정이 없으면 계속 fail-closed입니다. production CDK 스택은
+점진 전환을 시작하기 위해 명시적으로 `true`를 설정합니다. 긴급 롤백 시에는 API flag와
+Worker event source mapping을 함께 끄며 queue와 Job ledger는 보존합니다.
