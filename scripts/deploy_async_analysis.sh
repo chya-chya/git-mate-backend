@@ -27,8 +27,28 @@ if [[ ! "$RUNTIME_SECRET_ARN" =~ ^arn:[^:]+:secretsmanager:[^:]+:[0-9]{12}:secre
   exit 1
 fi
 
+if [[ -z "${RUNTIME_SECRET_VERSION_ID:-}" ]]; then
+  AWS_REGION_ARGUMENTS=()
+  if [[ -n "${AWS_REGION:-}" ]]; then
+    AWS_REGION_ARGUMENTS=(--region "$AWS_REGION")
+  fi
+  RUNTIME_SECRET_VERSION_ID="$(
+    aws "${AWS_REGION_ARGUMENTS[@]}" secretsmanager list-secret-version-ids \
+      --secret-id "$RUNTIME_SECRET_ARN" \
+      --query 'Versions[?contains(VersionStages, `AWSCURRENT`)].VersionId | [0]' \
+      --output text \
+      --no-cli-pager
+  )"
+fi
+
+if [[ ! "$RUNTIME_SECRET_VERSION_ID" =~ ^[A-Za-z0-9_-]{32,64}$ ]]; then
+  echo "RUNTIME_SECRET_VERSION_ID must identify the 32-64 character AWSCURRENT secret version." >&2
+  exit 1
+fi
+
 PARAMETERS=(
   --parameters "RuntimeSecretArn=${RUNTIME_SECRET_ARN}"
+  --parameters "RuntimeSecretVersionId=${RUNTIME_SECRET_VERSION_ID}"
   --parameters "FrontendUrl=${FRONTEND_URL}"
 )
 if [[ -n "${ALARM_EMAIL:-}" ]]; then

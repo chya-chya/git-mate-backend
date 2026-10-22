@@ -61,6 +61,10 @@ describe('AsyncAnalysisStack', () => {
         MaximumConcurrency: ASYNC_ANALYSIS_DEFAULTS.workerReservedConcurrency,
       },
     });
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      FunctionName: 'git-mate-production-api',
+      Timeout: ASYNC_ANALYSIS_DEFAULTS.apiTimeoutSeconds,
+    });
   });
 
   it('provisions API, Worker, and Reconciler with X-Ray and activates async API', () => {
@@ -105,6 +109,10 @@ describe('AsyncAnalysisStack', () => {
     template.hasResourceProperties('AWS::Lambda::EventSourceMapping', {
       Enabled: false,
     });
+    template.hasResourceProperties('AWS::Events::Rule', {
+      ScheduleExpression: 'rate(1 minute)',
+      State: 'DISABLED',
+    });
   });
 
   it('keeps secret values in Secrets Manager dynamic references', () => {
@@ -112,7 +120,13 @@ describe('AsyncAnalysisStack', () => {
     const rendered = JSON.stringify(template.toJSON());
 
     template.hasParameter('RuntimeSecretArn', { NoEcho: true });
+    template.hasParameter('RuntimeSecretVersionId', {
+      Type: 'String',
+      NoEcho: true,
+      AllowedPattern: '^[A-Za-z0-9_-]{32,64}$',
+    });
     expect(rendered).toContain('{{resolve:secretsmanager:');
+    expect(rendered).toContain('"Ref":"RuntimeSecretVersionId"');
     expect(rendered).not.toContain('sk-');
     expect(rendered).not.toContain('BEGIN PRIVATE KEY');
     expect(rendered).not.toContain('secretsmanager:GetSecretValue');
@@ -173,7 +187,23 @@ describe('AsyncAnalysisStack', () => {
     template.resourceCountIs('AWS::Logs::LogGroup', 3);
     template.resourceCountIs('AWS::Logs::MetricFilter', 2);
     template.resourceCountIs('AWS::CloudWatch::Dashboard', 1);
-    template.resourceCountIs('AWS::CloudWatch::Alarm', 8);
+    template.resourceCountIs('AWS::CloudWatch::Alarm', 9);
+    template.hasResourceProperties('AWS::Logs::MetricFilter', {
+      FilterPattern: Match.stringLikeRegexp('Analysis job publish deferred'),
+      MetricTransformations: [
+        Match.objectLike({ MetricName: 'ReconcilerItemFailures' }),
+      ],
+    });
+    template.hasResourceProperties('AWS::Logs::MetricFilter', {
+      FilterPattern: Match.stringLikeRegexp(
+        'Analysis job publish attempt failed',
+      ),
+    });
+    template.hasResourceProperties('AWS::Logs::MetricFilter', {
+      FilterPattern: Match.stringLikeRegexp(
+        'Analysis job reached the publish limit with reserved tokens',
+      ),
+    });
     template.hasResourceProperties('AWS::CloudWatch::Alarm', {
       AlarmName: 'git-mate-production-analysis-dlq-not-empty',
       Threshold: ASYNC_ANALYSIS_DEFAULTS.dlqAlarmThreshold,
@@ -181,6 +211,11 @@ describe('AsyncAnalysisStack', () => {
     template.hasResourceProperties('AWS::CloudWatch::Alarm', {
       AlarmName: 'git-mate-production-analysis-queue-age',
       Threshold: ASYNC_ANALYSIS_DEFAULTS.queueAgeAlarmSeconds,
+    });
+    template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      AlarmName: 'git-mate-production-reconciler-item-failures',
+      MetricName: 'ReconcilerItemFailures',
+      Threshold: 1,
     });
     for (const logGroup of logGroups) {
       expect(logGroup.Properties.RetentionInDays).toBe(30);

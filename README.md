@@ -50,6 +50,8 @@ CDK 스택은 API Lambda, Worker Lambda, Reconciler, FIFO 큐와 DLQ, 최소 권
 
 ```bash
 export RUNTIME_SECRET_ARN='arn:aws:secretsmanager:REGION:ACCOUNT:secret:NAME'
+# 선택 사항: 생략하면 스크립트가 AWSCURRENT VersionId를 조회합니다.
+# export RUNTIME_SECRET_VERSION_ID='00000000-0000-0000-0000-000000000000'
 export FRONTEND_URL='https://frontend.example.com'
 export ALARM_EMAIL='oncall@example.com'
 

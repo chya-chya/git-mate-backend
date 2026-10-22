@@ -18,6 +18,7 @@ PostgreSQL과 Secrets Manager secret 자체는 스택이 생성하거나 삭제�
 
 | 항목 | 값 |
 | --- | ---: |
+| API timeout (legacy sync rollback path) | 5분 |
 | Worker batch size | 1 |
 | Worker timeout | 5분 |
 | Source queue visibility timeout | 30분 |
@@ -65,7 +66,7 @@ API Function URL은 GitHub OAuth callback과 webhook 수신을 위해 AWS IAM �
 }
 ```
 
-CloudFormation이 Secrets Manager dynamic reference를 배포 시점에 해석합니다. secret 값은 CDK 소스, 합성 template, Git 기록, 배포 명령에 들어가지 않습니다. secret을 회전한 뒤에는 Lambda 환경을 갱신하도록 같은 커밋에서 CDK를 다시 배포합니다.
+CloudFormation이 Secrets Manager dynamic reference를 배포 시점에 해석합니다. secret 값은 CDK 소스, 합성 template, Git 기록, 배포 명령에 들어가지 않습니다. 배포 스크립트는 secret 값을 읽지 않고 `ListSecretVersionIds`로 `AWSCURRENT`의 VersionId만 조회해 dynamic reference에 고정합니다. 따라서 secret을 회전한 뒤 같은 커밋에서 다시 배포해도 VersionId parameter 변경으로 Lambda 환경이 갱신됩니다. 재현 가능한 롤백처럼 특정 버전을 고정해야 할 때만 비밀이 아닌 `RUNTIME_SECRET_VERSION_ID`를 명시합니다.
 
 ## 최초 준비
 
@@ -96,6 +97,8 @@ npx cdk bootstrap aws://ACCOUNT_ID/ap-northeast-2
 export AWS_PROFILE='production-deployer'
 export AWS_REGION='ap-northeast-2'
 export RUNTIME_SECRET_ARN='arn:aws:secretsmanager:ap-northeast-2:ACCOUNT_ID:secret:git-mate-production-XXXXXX'
+# 선택 사항: 생략하면 AWSCURRENT VersionId를 안전하게 조회합니다.
+# export RUNTIME_SECRET_VERSION_ID='00000000-0000-0000-0000-000000000000'
 export FRONTEND_URL='https://frontend.example.com'
 export ALARM_EMAIL='oncall@example.com'
 
@@ -130,6 +133,7 @@ production 기본 배포는 API의 `ASYNC_ANALYSIS_ENABLED=true`와 Worker event
 | `worker-throttles` | reserved concurrency 3 소진 | queue age와 DB connection 사용량 확인 후 용량 변경 검토 |
 | `worker-duration-p95` | p95가 4분 이상 | GitHub 수집량과 OpenAI 지연을 확인하고 5분 timeout 접근 전 분할 검토 |
 | `reconciler-errors` | outbox 복구 invocation 실패 | DB 연결과 SQS 발행 권한 확인 |
+| `reconciler-item-failures` | 개별 outbox 복구 또는 SQS 발행 실패 로그 발생 | Job publish 상태, SQS 설정·권한과 다음 재시도 시각 확인 |
 
 DLQ는 자동 소비하거나 자동 redrive하지 않습니다. 원인을 수정하고 Job의 DB 상태와 토큰 정산을 대사한 뒤 운영자가 제한된 수량만 source queue로 redrive합니다. queue 또는 DLQ를 purge하지 않습니다.
 
@@ -145,6 +149,7 @@ DLQ는 자동 소비하거나 자동 redrive하지 않습니다. 원인을 수�
 
 - `POST /analysis/jobs`가 `503 ASYNC_ANALYSIS_DISABLED`를 반환합니다.
 - Worker event source mapping이 disabled입니다.
+- Reconciler schedule이 disabled입니다.
 - 기존 queue와 DLQ 메시지 수가 유지됩니다.
 - deprecated 동기 API는 전환 기간 동안 사용할 수 있습니다.
 

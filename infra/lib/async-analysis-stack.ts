@@ -7,6 +7,7 @@ import {
   Fn,
   IgnoreMode,
   RemovalPolicy,
+  SecretValue,
   Stack,
   StackProps,
   Tags,
@@ -20,12 +21,12 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as logs from 'aws-cdk-lib/aws-logs';
-import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import { Construct } from 'constructs';
 
 export const ASYNC_ANALYSIS_DEFAULTS = Object.freeze({
+  apiTimeoutSeconds: 300,
   workerBatchSize: 1,
   workerTimeoutSeconds: 300,
   queueVisibilityTimeoutSeconds: 1800,
@@ -85,6 +86,19 @@ export class AsyncAnalysisStack extends Stack {
       allowedPattern: '^arn:[^:]+:secretsmanager:[^:]+:[0-9]{12}:secret:.+$',
       constraintDescription: 'Must be a complete Secrets Manager secret ARN.',
     });
+    const runtimeSecretVersionId = new CfnParameter(
+      this,
+      'RuntimeSecretVersionId',
+      {
+        type: 'String',
+        noEcho: true,
+        description:
+          'VersionId currently carrying the AWSCURRENT stage for the runtime secret.',
+        allowedPattern: '^[A-Za-z0-9_-]{32,64}$',
+        constraintDescription:
+          'Must be a 32-64 character Secrets Manager version ID.',
+      },
+    );
     const frontendUrl = new CfnParameter(this, 'FrontendUrl', {
       type: 'String',
       default: 'https://git-mate-frontend.vercel.app',
@@ -105,13 +119,11 @@ export class AsyncAnalysisStack extends Stack {
       ),
     });
 
-    const runtimeSecret = secretsmanager.Secret.fromSecretCompleteArn(
-      this,
-      'RuntimeSecret',
-      runtimeSecretArn.valueAsString,
-    );
     const secretValue = (key: string): string =>
-      runtimeSecret.secretValueFromJson(key).unsafeUnwrap();
+      SecretValue.secretsManager(runtimeSecretArn.valueAsString, {
+        jsonField: key,
+        versionId: runtimeSecretVersionId.valueAsString,
+      }).unsafeUnwrap();
 
     const deadLetterQueue = new sqs.Queue(this, 'AnalysisDeadLetterQueue', {
       queueName: `${resourcePrefix}-analysis-dlq.fifo`,
@@ -204,7 +216,7 @@ export class AsyncAnalysisStack extends Stack {
         file: 'Dockerfile.lambda',
       }),
       architecture: lambda.Architecture.X86_64,
-      timeout: Duration.seconds(30),
+      timeout: Duration.seconds(ASYNC_ANALYSIS_DEFAULTS.apiTimeoutSeconds),
       memorySize: 1024,
       role: apiRole,
       logGroup: apiLogGroup,
@@ -282,7 +294,7 @@ export class AsyncAnalysisStack extends Stack {
       ruleName: `${resourcePrefix}-analysis-reconciler`,
       description: 'Runs the AnalysisJob outbox reconciler every minute',
       schedule: events.Schedule.rate(Duration.minutes(1)),
-      enabled: true,
+      enabled: props.workerEnabled !== false,
     });
     reconcilerSchedule.addTarget(
       new eventTargets.LambdaFunction(reconcilerFunction, {
@@ -306,6 +318,11 @@ export class AsyncAnalysisStack extends Stack {
       filterPattern: logs.FilterPattern.anyTerm(
         'Analysis job reconciliation item failed',
         'Analysis job reconciliation failed',
+        'Analysis job publish acknowledgement was not recorded',
+        'Analysis job publish deferred',
+        'Analysis job publish failure state was stale',
+        'Analysis job reached the publish limit with reserved tokens',
+        'Analysis job publish attempt failed',
       ),
       metricNamespace,
       metricName: 'ReconcilerItemFailures',
@@ -397,6 +414,19 @@ export class AsyncAnalysisStack extends Stack {
         metric: new cloudwatch.Metric({
           namespace: metricNamespace,
           metricName: 'WorkerJobFailures',
+          period: Duration.minutes(5),
+          statistic: 'Sum',
+        }),
+        threshold: 1,
+        evaluationPeriods: 1,
+      }),
+      createAlarm(this, 'ReconcilerItemFailuresAlarm', {
+        alarmName: `${resourcePrefix}-reconciler-item-failures`,
+        alarmDescription:
+          'Reconciler emitted an item reconciliation or publish failure event.',
+        metric: new cloudwatch.Metric({
+          namespace: metricNamespace,
+          metricName: 'ReconcilerItemFailures',
           period: Duration.minutes(5),
           statistic: 'Sum',
         }),
