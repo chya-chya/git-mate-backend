@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import * as path from 'node:path';
 import { App } from 'aws-cdk-lib';
 import { Match, Template } from 'aws-cdk-lib/assertions';
 import {
@@ -64,6 +66,8 @@ describe('AsyncAnalysisStack', () => {
     template.hasResourceProperties('AWS::Lambda::Function', {
       FunctionName: 'git-mate-production-api',
       Timeout: ASYNC_ANALYSIS_DEFAULTS.apiTimeoutSeconds,
+      ReservedConcurrentExecutions:
+        ASYNC_ANALYSIS_DEFAULTS.apiReservedConcurrency,
     });
   });
 
@@ -113,6 +117,51 @@ describe('AsyncAnalysisStack', () => {
       ScheduleExpression: 'rate(1 minute)',
       State: 'DISABLED',
     });
+  });
+
+  it('can enable workers before reopening async job submission', () => {
+    const template = createTemplate({
+      asyncAnalysisEnabled: false,
+      workerEnabled: true,
+    });
+
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      FunctionName: 'git-mate-production-api',
+      Environment: {
+        Variables: Match.objectLike({ ASYNC_ANALYSIS_ENABLED: 'false' }),
+      },
+    });
+    template.hasResourceProperties('AWS::Lambda::EventSourceMapping', {
+      Enabled: true,
+    });
+    template.hasResourceProperties('AWS::Events::Rule', {
+      ScheduleExpression: 'rate(1 minute)',
+      State: 'ENABLED',
+    });
+  });
+
+  it('maps staged deployment modes to safe feature flag combinations', () => {
+    const script = readFileSync(
+      path.resolve(__dirname, '../../scripts/deploy_async_analysis.sh'),
+      'utf8',
+    );
+
+    expect(script).toContain(
+      'plan)\n    npm run infra:check\n    diff_stack true true',
+    );
+    expect(script).toContain(
+      'plan-provision)\n    npm run infra:check\n    diff_stack false false',
+    );
+    expect(script).toContain(
+      'provision)\n    npm run infra:check\n    deploy_stack false false',
+    );
+    expect(script).toContain(
+      'worker-only)\n    npm run infra:check\n    deploy_stack false true',
+    );
+    expect(script).toContain(
+      'deploy)\n    npm run infra:check\n    deploy_stack true true',
+    );
+    expect(script).toContain('disable)\n    deploy_stack false false');
   });
 
   it('keeps secret values in Secrets Manager dynamic references', () => {
@@ -187,7 +236,7 @@ describe('AsyncAnalysisStack', () => {
     template.resourceCountIs('AWS::Logs::LogGroup', 3);
     template.resourceCountIs('AWS::Logs::MetricFilter', 2);
     template.resourceCountIs('AWS::CloudWatch::Dashboard', 1);
-    template.resourceCountIs('AWS::CloudWatch::Alarm', 9);
+    template.resourceCountIs('AWS::CloudWatch::Alarm', 10);
     template.hasResourceProperties('AWS::Logs::MetricFilter', {
       FilterPattern: Match.stringLikeRegexp('Analysis job publish deferred'),
       MetricTransformations: [
@@ -211,6 +260,11 @@ describe('AsyncAnalysisStack', () => {
     template.hasResourceProperties('AWS::CloudWatch::Alarm', {
       AlarmName: 'git-mate-production-analysis-queue-age',
       Threshold: ASYNC_ANALYSIS_DEFAULTS.queueAgeAlarmSeconds,
+    });
+    template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      AlarmName: 'git-mate-production-api-throttles',
+      MetricName: 'Throttles',
+      Threshold: 1,
     });
     template.hasResourceProperties('AWS::CloudWatch::Alarm', {
       AlarmName: 'git-mate-production-reconciler-item-failures',

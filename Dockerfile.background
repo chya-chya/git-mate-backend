@@ -1,5 +1,5 @@
 # Build the Worker and Reconciler on the same Amazon Linux runtime used by Lambda.
-FROM public.ecr.aws/lambda/nodejs:20 AS builder
+FROM public.ecr.aws/lambda/nodejs:24 AS builder
 
 WORKDIR /build
 
@@ -12,7 +12,7 @@ RUN npx prisma generate
 RUN npm run build
 RUN npm prune --omit=dev
 
-FROM public.ecr.aws/lambda/nodejs:20
+FROM public.ecr.aws/lambda/nodejs:24
 
 ENV NODE_ENV=production
 

@@ -27,6 +27,7 @@ import { Construct } from 'constructs';
 
 export const ASYNC_ANALYSIS_DEFAULTS = Object.freeze({
   apiTimeoutSeconds: 300,
+  apiReservedConcurrency: 10,
   workerBatchSize: 1,
   workerTimeoutSeconds: 300,
   queueVisibilityTimeoutSeconds: 1800,
@@ -218,6 +219,8 @@ export class AsyncAnalysisStack extends Stack {
       architecture: lambda.Architecture.X86_64,
       timeout: Duration.seconds(ASYNC_ANALYSIS_DEFAULTS.apiTimeoutSeconds),
       memorySize: 1024,
+      reservedConcurrentExecutions:
+        ASYNC_ANALYSIS_DEFAULTS.apiReservedConcurrency,
       role: apiRole,
       logGroup: apiLogGroup,
       loggingFormat: lambda.LoggingFormat.JSON,
@@ -375,6 +378,13 @@ export class AsyncAnalysisStack extends Stack {
         threshold: 1,
         evaluationPeriods: 1,
       }),
+      createAlarm(this, 'ApiThrottlesAlarm', {
+        alarmName: `${resourcePrefix}-api-throttles`,
+        alarmDescription: 'API Lambda was throttled.',
+        metric: apiFunction.metricThrottles({ period: Duration.minutes(5) }),
+        threshold: 1,
+        evaluationPeriods: 1,
+      }),
       createAlarm(this, 'WorkerErrorsAlarm', {
         alarmName: `${resourcePrefix}-worker-errors`,
         alarmDescription: 'Worker Lambda returned an invocation error.',
@@ -459,6 +469,7 @@ export class AsyncAnalysisStack extends Stack {
         title: 'Lambda errors and throttles',
         left: [
           apiFunction.metricErrors(),
+          apiFunction.metricThrottles(),
           workerFunction.metricErrors(),
           workerFunction.metricThrottles(),
           reconcilerFunction.metricErrors(),

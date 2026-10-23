@@ -55,32 +55,55 @@ if [[ -n "${ALARM_EMAIL:-}" ]]; then
   PARAMETERS+=(--parameters "AlarmEmail=${ALARM_EMAIL}")
 fi
 
+deploy_stack() {
+  local async_analysis_enabled="$1"
+  local worker_enabled="$2"
+
+  npx cdk deploy "$STACK_NAME" \
+    -c "stage=${STAGE}" \
+    -c "asyncAnalysisEnabled=${async_analysis_enabled}" \
+    -c "workerEnabled=${worker_enabled}" \
+    "${PARAMETERS[@]}" \
+    --require-approval broadening
+}
+
+diff_stack() {
+  local async_analysis_enabled="$1"
+  local worker_enabled="$2"
+
+  npx cdk diff "$STACK_NAME" \
+    -c "stage=${STAGE}" \
+    -c "asyncAnalysisEnabled=${async_analysis_enabled}" \
+    -c "workerEnabled=${worker_enabled}" \
+    "${PARAMETERS[@]}"
+}
+
 case "$MODE" in
   plan)
     npm run infra:check
-    npx cdk diff "$STACK_NAME" \
-      -c "stage=${STAGE}" \
-      "${PARAMETERS[@]}"
+    diff_stack true true
+    ;;
+  plan-provision)
+    npm run infra:check
+    diff_stack false false
+    ;;
+  provision)
+    npm run infra:check
+    deploy_stack false false
+    ;;
+  worker-only)
+    npm run infra:check
+    deploy_stack false true
     ;;
   deploy)
     npm run infra:check
-    npx cdk deploy "$STACK_NAME" \
-      -c "stage=${STAGE}" \
-      -c asyncAnalysisEnabled=true \
-      -c workerEnabled=true \
-      "${PARAMETERS[@]}" \
-      --require-approval broadening
+    deploy_stack true true
     ;;
   disable)
-    npx cdk deploy "$STACK_NAME" \
-      -c "stage=${STAGE}" \
-      -c asyncAnalysisEnabled=false \
-      -c workerEnabled=false \
-      "${PARAMETERS[@]}" \
-      --require-approval broadening
+    deploy_stack false false
     ;;
   *)
-    echo "Usage: $0 [plan|deploy|disable]" >&2
+    echo "Usage: $0 [plan|plan-provision|provision|worker-only|deploy|disable]" >&2
     exit 1
     ;;
 esac

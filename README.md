@@ -55,8 +55,12 @@ export RUNTIME_SECRET_ARN='arn:aws:secretsmanager:REGION:ACCOUNT:secret:NAME'
 export FRONTEND_URL='https://frontend.example.com'
 export ALARM_EMAIL='oncall@example.com'
 
-./scripts/deploy_async_analysis.sh plan
+# 최초 배포: 외부 라우팅을 바꾸기 전에 비동기 접수와 소비를 끈 채 생성
+./scripts/deploy_async_analysis.sh plan-provision
+./scripts/deploy_async_analysis.sh provision
+# Function URL 기준으로 secret과 GitHub OAuth callback/webhook을 갱신한 뒤 활성화
 ./scripts/deploy_async_analysis.sh deploy
+# smoke test 통과 후 프론트엔드 API base를 새 Function URL로 전환
 ```
 
 실제 AWS 배포와 비밀값 변경은 이 저장소의 테스트 과정에서 수행하지 않습니다. 사전 조건, Secrets Manager JSON 계약, 배포 확인, 알람 대응 및 롤백은 [비동기 분석 운영 가이드](docs/ASYNC_ANALYSIS_OPERATIONS.md)에 정리되어 있습니다.

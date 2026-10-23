@@ -18,7 +18,9 @@ PostgreSQL과 Secrets Manager secret 자체는 스택이 생성하거나 삭제�
 
 | 항목 | 값 |
 | --- | ---: |
+| Lambda runtime | Node.js 24 |
 | API timeout (legacy sync rollback path) | 5분 |
+| API reserved concurrency | 10 |
 | Worker batch size | 1 |
 | Worker timeout | 5분 |
 | Source queue visibility timeout | 30분 |
@@ -48,7 +50,7 @@ API Function URL은 GitHub OAuth callback과 webhook 수신을 위해 AWS IAM �
 
 ## Secrets Manager 계약
 
-배포 시 전달하는 값은 secret 내용이 아니라 기존 secret의 전체 ARN뿐입니다. secret은 다음 JSON 키를 모두 가져야 합니다.
+배포 시 전달하는 값은 secret 내용이 아니라 기존 secret의 전체 ARN뿐입니다. 배포 주체에는 해당 secret의 `secretsmanager:ListSecretVersionIds` 권한이 필요합니다. secret은 다음 JSON 키를 모두 가져야 합니다.
 
 ```json
 {
@@ -102,13 +104,26 @@ export RUNTIME_SECRET_ARN='arn:aws:secretsmanager:ap-northeast-2:ACCOUNT_ID:secr
 export FRONTEND_URL='https://frontend.example.com'
 export ALARM_EMAIL='oncall@example.com'
 
-./scripts/deploy_async_analysis.sh plan
-./scripts/deploy_async_analysis.sh deploy
+./scripts/deploy_async_analysis.sh plan-provision
+./scripts/deploy_async_analysis.sh provision
 ```
 
 배포는 IAM 변경을 자동 승인하지 않습니다. CDK가 `broadening` 승인을 요구하면 역할별 정책 diff를 검토한 뒤 승인합니다. 이 PR은 AWS 배포나 데이터베이스 migration을 직접 실행하지 않습니다.
 
-production 기본 배포는 API의 `ASYNC_ANALYSIS_ENABLED=true`와 Worker event source mapping을 동시에 활성화합니다. 기존 동기 API는 Swagger에서 deprecated로 표시되지만 전환 기간에는 롤백 경로로 남습니다.
+`plan-provision`은 최초 비활성 상태를, `plan`은 전체 활성 상태를 기준으로 diff를 보여줍니다. `provision`은 API의 `ASYNC_ANALYSIS_ENABLED=false`, Worker event source mapping과 Reconciler schedule을 disabled로 배포합니다. 이 상태에서는 새 Function URL을 확인할 수 있지만 비동기 Job 접수·처리는 시작되지 않습니다. 최초 전환은 다음 순서를 지킵니다.
+
+1. 전환 전 프론트엔드 API base, GitHub OAuth callback, GitHub App webhook의 기존 값을 기록합니다.
+2. `provision` 결과의 `ApiFunctionUrl` stack output을 기록하고 `GET /` health 응답을 확인합니다.
+3. Secrets Manager의 `GITHUB_CALLBACK_URL`을 `<ApiFunctionUrl>auth/github/callback`으로 회전합니다. `RUNTIME_SECRET_VERSION_ID`를 직접 설정했다면 해제하거나 새 `AWSCURRENT` VersionId로 갱신하고 `provision`을 다시 실행해 새 함수에 먼저 반영합니다.
+4. GitHub OAuth callback을 같은 값으로 바꾸고, GitHub App webhook을 `<ApiFunctionUrl>github-app/webhooks`로 바꿉니다. GitHub App installation callback을 별도로 등록했다면 `<ApiFunctionUrl>github-app/installations/callback`으로 바꿉니다.
+5. 아래 전체 활성화 배포를 실행합니다.
+6. 배포 성공과 smoke test를 확인한 뒤 프론트엔드의 API base를 새 Function URL로 바꿉니다.
+
+```bash
+./scripts/deploy_async_analysis.sh deploy
+```
+
+production 전체 활성화 배포는 API의 `ASYNC_ANALYSIS_ENABLED=true`와 Worker event source mapping, Reconciler schedule을 함께 활성화합니다. 기존 동기 API는 Swagger에서 deprecated로 표시되지만 전환 기간에는 롤백 경로로 남습니다.
 
 ## 배포 후 확인
 
@@ -128,6 +143,7 @@ production 기본 배포는 API의 `ASYNC_ANALYSIS_ENABLED=true`와 Worker event
 | --- | --- | --- |
 | `analysis-dlq-not-empty` | 최대 5회 수신 후에도 처리 실패 | DLQ 메시지의 `jobId`, Job 상태, Worker 로그를 함께 대사 |
 | `analysis-queue-age` | oldest message가 10분 이상 대기 | Worker throttling/concurrency, DB·외부 API 장애 확인 |
+| `api-throttles` | API reserved concurrency 10 소진 | 요청 급증·공격 여부와 DB 사용량 확인 후 rate limit 또는 용량 변경 검토 |
 | `worker-errors` | Lambda invocation 실패 | 해당 request ID와 X-Ray trace 확인 |
 | `worker-job-failures` | 구조화된 Job 실패 로그 발생 | `lastErrorCode`, retryable 여부, 토큰 정산 확인 |
 | `worker-throttles` | reserved concurrency 3 소진 | queue age와 DB connection 사용량 확인 후 용량 변경 검토 |
@@ -153,12 +169,19 @@ DLQ는 자동 소비하거나 자동 redrive하지 않습니다. 원인을 수�
 - 기존 queue와 DLQ 메시지 수가 유지됩니다.
 - deprecated 동기 API는 전환 기간 동안 사용할 수 있습니다.
 
+새 Function URL 자체에 장애가 있으면 `disable` 후 프론트엔드 API base, GitHub OAuth callback, GitHub App webhook을 전환 전에 기록한 기존 URL로 되돌립니다. Secrets Manager의 `GITHUB_CALLBACK_URL`도 기존 callback 값으로 회전하고 `RUNTIME_SECRET_VERSION_ID`를 해제한 뒤 `disable`을 다시 실행해 Lambda가 해당 버전을 사용하게 합니다. 외부 설정이 새 URL과 기존 URL에 반씩 남지 않도록 OAuth 로그인과 webhook delivery를 각각 확인합니다.
+
 코드 롤백은 검증된 이전 Git ref를 별도 checkout에서 합성·검토한 뒤 같은 stack 이름으로 재배포합니다. 먼저 `disable`로 신규 유입을 막고, 이전 template의 queue 교체 여부가 없는지 `cdk diff`로 확인합니다. FIFO queue와 Log Group은 `Retain` 정책이므로 stack 삭제를 롤백 수단으로 사용하지 않습니다.
 
 복구 후에는 아래 순서로 다시 켭니다.
 
 1. 원인 수정과 migration 상태 확인
-2. Worker mapping 활성화 배포
+2. Worker mapping과 Reconciler만 활성화 배포
+
+   ```bash
+   ./scripts/deploy_async_analysis.sh worker-only
+   ```
+
 3. queue age와 DLQ를 감시하며 backlog 처리
-4. 비동기 API 활성화
+4. `./scripts/deploy_async_analysis.sh deploy`로 비동기 API 활성화
 5. smoke test와 알람 정상화 확인
