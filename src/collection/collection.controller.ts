@@ -1,4 +1,12 @@
-import { Controller, Post, Get, Param, UseGuards, Req } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Get,
+  Header,
+  Param,
+  UseGuards,
+  Req,
+} from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import {
   ApiTags,
@@ -26,8 +34,31 @@ export class CollectionController {
 
   @Post('sync/:githubRepoId')
   @UseGuards(AuthGuard('jwt'))
-  @ApiOperation({ summary: 'GitHub 저장소 PR 동기화' })
-  @ApiResponse({ status: 200, type: CollectedDataDto })
+  @Header('Deprecation', 'true')
+  @Header('Link', '</analysis/jobs>; rel="successor-version"')
+  @ApiOperation({
+    summary: 'GitHub 저장소 PR 동기화 (기존 동기 경로)',
+    description:
+      '신규 호출은 POST /analysis/jobs를 사용하세요. 이 동기 API는 점진 전환 기간에만 유지됩니다.',
+    deprecated: true,
+  })
+  @ApiResponse({
+    status: 200,
+    type: CollectedDataDto,
+    headers: {
+      Deprecation: {
+        description: '이 동기 API가 deprecated 상태임을 표시',
+        schema: { type: 'string', example: 'true' },
+      },
+      Link: {
+        description: '후속 비동기 Job API',
+        schema: {
+          type: 'string',
+          example: '</analysis/jobs>; rel="successor-version"',
+        },
+      },
+    },
+  })
   async sync(
     @Param('githubRepoId') githubRepoId: string,
     @Req() req: AuthenticatedRequest,

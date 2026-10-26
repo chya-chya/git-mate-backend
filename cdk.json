@@ -1,0 +1,8 @@
+{
+  "app": "npx ts-node --project infra/tsconfig.json infra/bin/git-mate-backend.ts",
+  "context": {
+    "stage": "production",
+    "asyncAnalysisEnabled": "true",
+    "workerEnabled": "true"
+  }
+}

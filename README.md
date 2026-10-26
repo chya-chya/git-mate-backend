@@ -1,98 +1,74 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# Git-Mate Backend
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+GitHub Pull Request와 리뷰 활동을 수집해 개발자의 협업·엔지니어링 역량을 분석하는 NestJS 백엔드입니다. PostgreSQL/Prisma를 영속 저장소로 사용하며, 운영 분석은 SQS FIFO와 Lambda Worker로 비동기 처리합니다.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+## 주요 구성
 
-## Description
+- API: NestJS, Swagger, JWT 인증
+- 데이터: PostgreSQL, Prisma
+- 비동기 분석: `AnalysisJob` outbox, SQS FIFO, Worker Lambda
+- 복구: EventBridge로 실행되는 Reconciler Lambda
+- AI 분석: `gpt-5-mini`, Structured Outputs, 결정적 evidence 검증
+- 인프라: AWS CDK, CloudWatch, X-Ray
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
-
-## Project setup
+## 로컬 실행
 
 ```bash
-$ npm install
+npm ci
+npx prisma generate
+npm run start:dev
 ```
 
-## Compile and run the project
+로컬 SQS 통합 환경은 `docker-compose.yml`과 `scripts/localstack/init-sqs.sh`를 사용합니다. 필요한 환경 변수와 메시지 계약은 [SQS 분석 Job 문서](docs/SQS_ANALYSIS_JOBS.md)를 참고하세요.
+
+## 검사
 
 ```bash
-# development
-$ npm run start
-
-# watch mode
-$ npm run start:dev
-
-# production mode
-$ npm run start:prod
+npm run lint
+npm run build
+npm run test -- --runInBand
+npm run analysis:eval:ci
+npm run infra:check
 ```
 
-## Run tests
+`infra:check`는 CDK TypeScript 검사, assertion 테스트, CloudFormation 합성을 네트워크 호출 없이 수행합니다.
+
+## 비동기 분석 API
+
+운영 CDK 스택은 `ASYNC_ANALYSIS_ENABLED=true`로 배포됩니다.
+
+- `POST /analysis/jobs`: 분석 Job 접수
+- `GET /analysis/jobs`: 현재 사용자의 Job 목록
+- `GET /analysis/jobs/:id`: Job 상태 조회
+- `POST /analysis/jobs/:id/retry`: 재시도 가능한 실패 Job 재접수
+
+기존 `POST /collection/sync/:githubRepoId`는 전환 기간을 위한 deprecated 동기 경로입니다. 신규 클라이언트는 비동기 API를 사용해야 합니다.
+
+## AWS 배포
+
+CDK 스택은 API Lambda, Worker Lambda, Reconciler, FIFO 큐와 DLQ, 최소 권한 IAM, CloudWatch 대시보드·알람, X-Ray를 함께 관리합니다.
 
 ```bash
-# unit tests
-$ npm run test
+export RUNTIME_SECRET_ARN='arn:aws:secretsmanager:REGION:ACCOUNT:secret:NAME'
+# 선택 사항: 생략하면 스크립트가 AWSCURRENT VersionId를 조회합니다.
+# export RUNTIME_SECRET_VERSION_ID='00000000-0000-0000-0000-000000000000'
+export FRONTEND_URL='https://frontend.example.com'
+export ALARM_EMAIL='oncall@example.com'
 
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
+# 최초 배포: 외부 라우팅을 바꾸기 전에 비동기 접수와 소비를 끈 채 생성
+./scripts/deploy_async_analysis.sh plan-provision
+./scripts/deploy_async_analysis.sh provision
+# Function URL 기준으로 secret과 GitHub OAuth callback/webhook을 갱신한 뒤 활성화
+./scripts/deploy_async_analysis.sh deploy
+# smoke test 통과 후 프론트엔드 API base를 새 Function URL로 전환
 ```
 
-## Deployment
+실제 AWS 배포와 비밀값 변경은 이 저장소의 테스트 과정에서 수행하지 않습니다. 사전 조건, Secrets Manager JSON 계약, 배포 확인, 알람 대응 및 롤백은 [비동기 분석 운영 가이드](docs/ASYNC_ANALYSIS_OPERATIONS.md)에 정리되어 있습니다.
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+## 설계 문서
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
-
-```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
-```
-
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
-
-## Resources
-
-Check out a few resources that may come in handy when working with NestJS:
-
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+- [비동기 분석 운영 가이드](docs/ASYNC_ANALYSIS_OPERATIONS.md)
+- [SQS 분석 Job 계약](docs/SQS_ANALYSIS_JOBS.md)
+- [비동기 파이프라인 ADR](docs/adr/0001-asynchronous-analysis-pipeline.md)
+- [분석 품질 평가](docs/ANALYSIS_EVALUATIONS.md)
+- [전체 아키텍처](docs/ARCHITECTURE.md)
