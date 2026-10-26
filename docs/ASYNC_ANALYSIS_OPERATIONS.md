@@ -157,6 +157,8 @@ DLQ는 자동 소비하거나 자동 redrive하지 않습니다. 원인을 수�
 
 긴급 중지는 새 Job 접수와 Worker 소비를 함께 끕니다. queue, DLQ, Job ledger는 보존됩니다.
 
+`disable`은 현재 배포된 CloudFormation 원본 template에서 세 Lambda의 기능 플래그, Worker mapping, Reconciler schedule만 비활성화합니다. Docker/CDK 빌드·이미지 발행·Secrets Manager 조회 없이 AWS CLI와 Node.js만 사용하며, 현재 checkout의 코드·이미지·secret 버전·parameter는 배포하지 않습니다. 배포된 stack 구조가 예상과 다르거나 stack update가 진행 중이면 변경 전에 실패합니다. 이미 비활성 상태면 추가 update를 만들지 않습니다. 실행 주체에는 해당 stack의 `cloudformation:DescribeStacks`, `cloudformation:GetTemplate`, `cloudformation:UpdateStack` 권한과 기존 CloudFormation 실행 권한이 필요합니다. CloudFormation update 완료까지 대기하므로 이미 실행 중인 Worker는 즉시 종료되지 않습니다.
+
 ```bash
 ./scripts/deploy_async_analysis.sh disable
 ```
@@ -169,11 +171,13 @@ DLQ는 자동 소비하거나 자동 redrive하지 않습니다. 원인을 수�
 - 기존 queue와 DLQ 메시지 수가 유지됩니다.
 - deprecated 동기 API는 전환 기간 동안 사용할 수 있습니다.
 
-새 Function URL 자체에 장애가 있으면 `disable` 후 프론트엔드 API base, GitHub OAuth callback, GitHub App webhook을 전환 전에 기록한 기존 URL로 되돌립니다. Secrets Manager의 `GITHUB_CALLBACK_URL`도 기존 callback 값으로 회전하고 `RUNTIME_SECRET_VERSION_ID`를 해제한 뒤 `disable`을 다시 실행해 Lambda가 해당 버전을 사용하게 합니다. 외부 설정이 새 URL과 기존 URL에 반씩 남지 않도록 OAuth 로그인과 webhook delivery를 각각 확인합니다.
+새 Function URL 자체에 장애가 있으면 `disable` 후 프론트엔드 API base, GitHub OAuth callback, GitHub App webhook을 전환 전에 기록한 기존 URL로 되돌립니다. Secrets Manager의 `GITHUB_CALLBACK_URL`도 기존 callback 값으로 회전하되, `disable`은 배포된 secret 버전을 그대로 보존하므로 새 secret 값을 적용하지 않습니다. 새 CDK stack에 callback 변경을 반영할 때는 `RUNTIME_SECRET_VERSION_ID`를 해제하거나 새 버전으로 지정하고 검증된 checkout에서 `provision`을 실행합니다. 기존 API의 secret은 해당 API의 원래 배포 절차로 반영합니다. 외부 설정이 새 URL과 기존 URL에 반씩 남지 않도록 OAuth 로그인과 webhook delivery를 각각 확인합니다.
 
 코드 롤백은 검증된 이전 Git ref를 별도 checkout에서 합성·검토한 뒤 같은 stack 이름으로 재배포합니다. 먼저 `disable`로 신규 유입을 막고, 이전 template의 queue 교체 여부가 없는지 `cdk diff`로 확인합니다. FIFO queue와 Log Group은 `Retain` 정책이므로 stack 삭제를 롤백 수단으로 사용하지 않습니다.
 
 복구 후에는 아래 순서로 다시 켭니다.
+
+긴급 중지도 CloudFormation stack template을 갱신하므로 직접 Lambda 설정을 수정한 drift가 생기지 않습니다. 이후 `worker-only`와 `deploy`는 현재 비활성 template과 CDK의 활성 template 차이를 배포하여 복구합니다.
 
 1. 원인 수정과 migration 상태 확인
 2. Worker mapping과 Reconciler만 활성화 배포

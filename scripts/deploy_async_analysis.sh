@@ -12,6 +12,11 @@ if [[ ! "$STAGE" =~ ^[a-z0-9][a-z0-9-]{0,19}$ ]]; then
   exit 1
 fi
 
+if [[ "$MODE" == "disable" ]]; then
+  SCRIPT_DIRECTORY="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+  exec node "$SCRIPT_DIRECTORY/disable_async_analysis.cjs" "$STAGE"
+fi
+
 if [[ ! "$FRONTEND_URL" =~ ^https:// ]]; then
   echo "FRONTEND_URL must use HTTPS." >&2
   exit 1
@@ -98,9 +103,6 @@ case "$MODE" in
   deploy)
     npm run infra:check
     deploy_stack true true
-    ;;
-  disable)
-    deploy_stack false false
     ;;
   *)
     echo "Usage: $0 [plan|plan-provision|provision|worker-only|deploy|disable]" >&2

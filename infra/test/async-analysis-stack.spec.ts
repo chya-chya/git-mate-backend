@@ -161,7 +161,12 @@ describe('AsyncAnalysisStack', () => {
     expect(script).toContain(
       'deploy)\n    npm run infra:check\n    deploy_stack true true',
     );
-    expect(script).toContain('disable)\n    deploy_stack false false');
+    expect(script).toContain(
+      'exec node "$SCRIPT_DIRECTORY/disable_async_analysis.cjs" "$STAGE"',
+    );
+    expect(script.indexOf('disable_async_analysis.cjs')).toBeLessThan(
+      script.indexOf('RUNTIME_SECRET_ARN is required'),
+    );
   });
 
   it('keeps secret values in Secrets Manager dynamic references', () => {
