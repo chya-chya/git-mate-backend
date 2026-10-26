@@ -12,13 +12,20 @@
 | 변수 | 기본값 또는 용도 |
 | --- | --- |
 | `AWS_REGION` | SQS 리전. 발행 시 필수 |
-| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | LocalStack은 `test`; 운영은 secret manager 또는 실행 역할 사용 |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | LocalStack은 `test`; 명시할 경우 반드시 두 값을 함께 설정 |
+| `AWS_SESSION_TOKEN` | Lambda 실행 역할·STS의 임시 access key를 사용할 때 함께 전달하는 세션 토큰 |
 | `SQS_ENDPOINT` | LocalStack은 `http://localhost:4566`; 운영 AWS에서는 생략 |
 | `ANALYSIS_JOB_QUEUE_URL` | `.fifo`로 끝나는 source queue URL. 발행 시 필수 |
 | `ANALYSIS_JOB_PUBLISH_MAX_ATTEMPTS` | 기본 `5` |
 | `ANALYSIS_JOB_REPUBLISH_AFTER_SECONDS` | 기본 `60` |
 | `ANALYSIS_JOB_RECONCILE_BATCH_SIZE` | 기본 `20` |
 | `ASYNC_ANALYSIS_ENABLED` | 애플리케이션 로컬 기본은 fail-closed `false`; production CDK 스택은 `true`로 설정 |
+
+Lambda가 실행 역할의 임시 자격 증명을 환경 변수로 제공하면 access key, secret key와
+session token을 모두 SQS 요청 서명에 사용합니다. LocalStack이나 장기 access key는
+session token 없이 사용할 수 있습니다. 명시적인 access key와 secret key가 모두 없으면
+AWS SDK 기본 credential provider chain을 사용하므로 컨테이너·인스턴스 역할과 로컬 AWS
+프로필도 지원합니다. 자격 증명 값은 로그나 문서에 기록하지 않습니다.
 
 기능 플래그가 꺼져 있고 SQS 설정이 없어도 API는 시작됩니다. 이미 접수된 Job을 복구하는
 reconciler는 기능 플래그와 독립적이며, 실제 발행 시 설정이 없으면 안전한 설정 오류를

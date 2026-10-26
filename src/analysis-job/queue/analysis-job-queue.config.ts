@@ -18,6 +18,7 @@ export interface AnalysisJobSqsSettings {
   credentials?: {
     accessKeyId: string;
     secretAccessKey: string;
+    sessionToken?: string;
   };
 }
 
@@ -67,6 +68,7 @@ export class AnalysisJobQueueConfig {
       : undefined;
     const accessKeyId = this.optional('AWS_ACCESS_KEY_ID');
     const secretAccessKey = this.optional('AWS_SECRET_ACCESS_KEY');
+    const sessionToken = this.optional('AWS_SESSION_TOKEN');
     if (
       (accessKeyId && !secretAccessKey) ||
       (!accessKeyId && secretAccessKey)
@@ -82,7 +84,11 @@ export class AnalysisJobQueueConfig {
       endpoint,
       credentials:
         accessKeyId && secretAccessKey
-          ? { accessKeyId, secretAccessKey }
+          ? {
+              accessKeyId,
+              secretAccessKey,
+              ...(sessionToken ? { sessionToken } : {}),
+            }
           : undefined,
     };
   }
