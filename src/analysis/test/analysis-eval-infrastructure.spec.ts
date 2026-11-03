@@ -129,10 +129,15 @@ describe('analysis evaluation infrastructure', () => {
     }
   });
 
-  it('keeps paid evaluation manual/nightly only and uploads both reports', () => {
+  it('requires explicit manual approval for paid evaluation and uploads both reports', () => {
     const workflow = readRepositoryFile('.github/workflows/analysis-evals.yml');
     expect(workflow).toContain('workflow_dispatch:');
-    expect(workflow).toContain('schedule:');
+    expect(workflow).not.toContain('schedule:');
+    expect(workflow).toContain('confirm_paid_calls:');
+    expect(workflow).toContain('default: false');
+    expect(workflow).toContain('if: ${{ inputs.confirm_paid_calls }}');
+    expect(workflow).toContain('if: ${{ !inputs.confirm_paid_calls }}');
+    expect(workflow).toContain('npm run analysis:eval:live -- --dry-run');
     expect(workflow).not.toContain('pull_request:');
     expect(workflow).not.toMatch(/^\s+push:/mu);
     expect(workflow).toContain("RUN_LIVE_OPENAI_EVALS: 'true'");

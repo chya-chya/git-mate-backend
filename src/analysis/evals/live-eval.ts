@@ -374,6 +374,29 @@ class LiveEvalCallError extends Error {
   }
 }
 
+export class LiveEvalProviderBlockedError extends Error {
+  constructor(
+    readonly code: 'PROVIDER_QUOTA_EXHAUSTED' | 'PROVIDER_AUTH_FAILED',
+  ) {
+    super(`Live evaluation stopped: ${code}. No further API calls were made.`);
+    this.name = LiveEvalProviderBlockedError.name;
+  }
+}
+
+function assertProviderCanContinue(error: unknown): void {
+  if (typeof error !== 'object' || error === null) return;
+  const provider = error as { status?: unknown; code?: unknown };
+  if (
+    provider.code === 'insufficient_quota' ||
+    provider.code === 'credit_balance_exhausted'
+  ) {
+    throw new LiveEvalProviderBlockedError('PROVIDER_QUOTA_EXHAUSTED');
+  }
+  if (provider.status === 401 || provider.status === 403) {
+    throw new LiveEvalProviderBlockedError('PROVIDER_AUTH_FAILED');
+  }
+}
+
 async function runVariant(
   variant: AnalysisPromptVariant,
   runner: LiveEvalVariantRunner,
@@ -405,6 +428,7 @@ async function runVariant(
         output: response.output,
       });
     } catch (error) {
+      assertProviderCanContinue(error);
       const metadata = errorMetadata(error);
       if (metadata.evidenceIssues !== null) {
         outputs.push({
