@@ -5,6 +5,7 @@ import {
   createLiveEvalDryRunReport,
   renderLiveEvalMarkdown,
   runLiveAnalysisEvaluation,
+  LiveEvalProviderBlockedError,
 } from '../src/analysis/evals/live-eval';
 
 const args = process.argv.slice(2);
@@ -75,6 +76,8 @@ void main().catch((error: unknown) => {
   console.error(
     JSON.stringify({
       errorType: error instanceof Error ? error.name : 'UnknownError',
+      errorCode:
+        error instanceof LiveEvalProviderBlockedError ? error.code : undefined,
       message: 'Live evaluation failed. Review configuration and local logs.',
     }),
   );

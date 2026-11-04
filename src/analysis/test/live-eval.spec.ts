@@ -15,6 +15,31 @@ import { InvalidLlmProviderResponseError } from '../llm-provider.service';
 
 describe('live analysis baseline/candidate evaluation', () => {
   it.each([
+    [
+      { status: 429, code: 'credit_balance_exhausted' },
+      'PROVIDER_QUOTA_EXHAUSTED',
+    ],
+    [{ status: 429, code: 'insufficient_quota' }, 'PROVIDER_QUOTA_EXHAUSTED'],
+    [{ status: 401 }, 'PROVIDER_AUTH_FAILED'],
+    [{ status: 403 }, 'PROVIDER_AUTH_FAILED'],
+  ])(
+    'stops after the first blocked provider request',
+    async (provider, code) => {
+      const run = jest.fn().mockRejectedValue({
+        ...provider,
+        message: 'secret-provider-detail',
+      });
+      await expect(
+        runLiveAnalysisEvaluation(
+          { RUN_LIVE_OPENAI_EVALS: 'true', OPENAI_API_KEY: 'secret' },
+          { run },
+        ),
+      ).rejects.toMatchObject({ code });
+      expect(run).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([
     [{}, 'Live evaluation is disabled'],
     [{ RUN_LIVE_OPENAI_EVALS: 'false', OPENAI_API_KEY: 'secret' }, 'disabled'],
     [{ RUN_LIVE_OPENAI_EVALS: 'true' }, 'OPENAI_API_KEY'],

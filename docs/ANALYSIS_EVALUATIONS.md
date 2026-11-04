@@ -147,9 +147,11 @@ npm run analysis:eval:live -- \
 
 JSON에는 prompt 전체 template/checksum, variant 요약, case별 합성 output·usage·latency·오류가 들어갑니다. fixture가 익명 합성 데이터인지 코드에서 고정하며 API key는 report나 오류 출력에 포함하지 않습니다.
 
-## nightly workflow
+## 수동 workflow
 
-`.github/workflows/analysis-evals.yml`은 `workflow_dispatch`와 nightly schedule만 사용합니다. PR/push trigger는 없습니다. secret이 없으면 구성 오류로 실패하며, JSON과 Markdown을 artifact로 30일 보존합니다. concurrency group은 한 실행만 허용하고 취소 대신 대기합니다.
+`.github/workflows/analysis-evals.yml`은 `workflow_dispatch`로만 실행합니다. 예약·PR·push 실행은 없습니다. 기본값인 `confirm_paid_calls=false`는 API key 없이 결정적 평가와 dry-run만 실행하며 API 호출은 0회입니다. 최대 48회의 유료 호출을 승인할 때만 `confirm_paid_calls=true`로 실행합니다. secret이 없으면 호출 전에 실패하며, 생성된 JSON과 Markdown은 artifact로 30일 보존합니다. concurrency group은 한 실행만 허용하고 취소 대신 대기합니다.
+
+크레딧 부족(`insufficient_quota`, `credit_balance_exhausted`) 또는 인증·권한 오류(401/403)는 첫 오류에서 전체 실행을 중단합니다. 나머지 fixture나 candidate를 호출하지 않으며, CLI에는 비밀값을 포함하지 않는 `PROVIDER_QUOTA_EXHAUSTED` 또는 `PROVIDER_AUTH_FAILED` 코드만 표시합니다. 응답을 받은 뒤의 개별 품질 검증 실패는 기존처럼 보고서에 기록하며, 기준 미달을 성공으로 처리하지 않습니다. draft label은 별도 승인 전까지 전체 품질 gate를 통과할 수 없습니다.
 
 일반 PR의 `.github/workflows/analysis-ledger.yml`은 평가 소스, 스크립트, 이 문서, live workflow 변경을 모두 path filter에 포함하지만 실제 OpenAI 호출 대신 deterministic grader만 실행합니다.
 
@@ -159,7 +161,7 @@ JSON에는 prompt 전체 template/checksum, variant 요약, case별 합성 outpu
 2. `npm run analysis:eval:ci`로 fixture/reference/prompt integrity를 확인합니다.
 3. `npm run analysis:eval:live -- --dry-run`에서 모델·prompt checksum·48회 호출 계획을 확인합니다.
 4. label 승인 상태와 예상 비용을 확인하고 실제 실행 승인을 받습니다.
-5. 같은 commit과 환경에서 수동 명령 또는 nightly workflow를 실행합니다.
+5. 같은 commit과 환경에서 수동 명령 또는 유료 호출을 명시 승인한 workflow를 실행합니다.
 6. JSON의 prompt manifest, 실제 usage와 latency, Markdown 비교표를 함께 보관합니다.
 
 프롬프트나 모델을 변경할 때는 새 불변 version, 전체 prompt와 checksum, 24개 fixture/reference, 문서, 비용 승인을 같은 PR에서 검토합니다. 모델 변경은 별도 승인 없이는 금지하며 현재 평가는 계속 `gpt-5-mini`만 사용합니다.

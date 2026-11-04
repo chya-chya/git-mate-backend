@@ -2,8 +2,12 @@ name: Live analysis evaluation
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '17 18 * * *'
+    inputs:
+      confirm_paid_calls:
+        description: 'Approve up to 48 paid OpenAI API calls'
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -25,22 +29,27 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Validate evaluation plan without API calls
+        if: ${{ !inputs.confirm_paid_calls }}
+        run: npm run analysis:eval:ci && npm run analysis:eval:live -- --dry-run
       - name: Require OpenAI API key
+        if: ${{ inputs.confirm_paid_calls }}
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: test -n "$OPENAI_API_KEY"
       - name: Run 24 baseline and 24 candidate synthetic evaluations
+        if: ${{ inputs.confirm_paid_calls }}
         env:
           RUN_LIVE_OPENAI_EVALS: 'true'
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: npm run analysis:eval:live -- --output .artifacts/analysis-evals/latest.json
       - name: Upload evaluation report
-        if: always()
+        if: ${{ always() && inputs.confirm_paid_calls }}
         uses: actions/upload-artifact@v6
         with:
           name: analysis-eval-${{ github.run_id }}
           path: |
             .artifacts/analysis-evals/latest.json
             .artifacts/analysis-evals/latest.md
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 30
